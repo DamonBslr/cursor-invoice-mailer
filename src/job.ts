@@ -7,6 +7,7 @@ import { createRunLogger } from "./logger.js";
 import { withRetry } from "./retry.js";
 import { loadSession } from "./session/store.js";
 import { launchBrowser } from "./browser/launch.js";
+import { applyStealth } from "./browser/stealth.js";
 import { navigateToInvoicePage, scrapeInvoices, downloadInvoice, type DownloadedInvoice } from "./browser/invoices.js";
 import { loadLedger, hasBeenSent, recordSent, touchLedger } from "./ledger/store.js";
 import { createMailer } from "./mail/index.js";
@@ -55,6 +56,7 @@ export async function runJob(options: RunJobOptions = {}): Promise<JobResult> {
 
   try {
     const context = await browser.newContext({ storageState, acceptDownloads: true });
+    await applyStealth(context);
     const page = await context.newPage();
 
     await withRetry(() => navigateToInvoicePage(page, config), { ...retryDefaults, label: "navigateToInvoicePage" });
@@ -63,6 +65,25 @@ export async function runJob(options: RunJobOptions = {}): Promise<JobResult> {
     logger.info({ found: invoices.length }, "Scraped invoice rows");
 
     if (invoices.length === 0) {
+      // Distinguish "genuinely no invoices" from "page didn't render what we
+      // expected" — this environment runs a more easily fingerprinted
+      // headless build than local dev/bootstrap, so a valid session can
+      // still land on a page that renders without the invoice data.
+      const diagnostics = await page
+        .evaluate(() => {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- `document` isn't declared in this project's (deliberately DOM-less) tsconfig lib; this callback runs in the browser, not Node.
+          const doc = (globalThis as any).document;
+          const bodyText: string = doc?.body?.innerText ?? "";
+          return {
+            title: doc?.title ?? "",
+            bodyTextLength: bodyText.length,
+            hasInvoicesHeading: bodyText.includes("Invoices"),
+            tableCount: doc?.querySelectorAll("table").length ?? 0,
+          };
+        })
+        .catch((err) => ({ evalError: err instanceof Error ? err.message : String(err) }));
+      logger.warn({ url: page.url(), diagnostics }, "No invoice rows matched — diagnostics for this page load");
+
       await touchLedger(await loadLedger(config), config);
       return {
         runId,

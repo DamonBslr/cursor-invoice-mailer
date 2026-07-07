@@ -23,11 +23,14 @@ export async function writeBlob(
   token: string,
   contentType = "text/plain",
 ): Promise<void> {
-  // With addRandomSuffix: false, Vercel Blob overwrites any existing blob at
-  // the same pathname, which is exactly what we want for a stable session/ledger key.
+  // We want a stable session/ledger key that gets overwritten on every
+  // write, not a new randomly-suffixed blob each time — that requires both
+  // addRandomSuffix: false AND allowOverwrite: true (the latter defaults to
+  // false and otherwise throws once a blob already exists at this pathname).
   await put(pathname, contents, {
     access: "private",
     addRandomSuffix: false,
+    allowOverwrite: true,
     contentType,
     token,
   });

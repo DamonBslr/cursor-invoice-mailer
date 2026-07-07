@@ -31,6 +31,7 @@ import { createInterface } from "node:readline/promises";
 import { chromium } from "playwright";
 import { loadConfig } from "../src/config.js";
 import { saveSession } from "../src/session/store.js";
+import { applyStealth } from "../src/browser/stealth.js";
 
 async function promptEnter(question: string): Promise<void> {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -65,16 +66,7 @@ async function main(): Promise<void> {
   console.log(`Opening a browser to ${config.INVOICE_SOURCE_URL} ...`);
   const browser = await launchLeastDetectableBrowser();
   const context = await browser.newContext();
-
-  // Mask the most commonly checked automation fingerprints. Applied before
-  // any page script runs, in every frame.
-  await context.addInitScript(() => {
-    Object.defineProperty(navigator, "webdriver", { get: () => undefined });
-    // @ts-expect-error - non-standard, only present when Chrome DevTools Protocol drives the page
-    window.chrome = window.chrome || { runtime: {} };
-    Object.defineProperty(navigator, "plugins", { get: () => [1, 2, 3, 4, 5] });
-    Object.defineProperty(navigator, "languages", { get: () => ["en-US", "en"] });
-  });
+  await applyStealth(context);
 
   const page = await context.newPage();
 
