@@ -34,8 +34,23 @@ export async function launchBrowser(options: { headless?: boolean } = {}): Promi
       ? [executableDir, ...new Set(process.env.LD_LIBRARY_PATH.split(":"))].join(":")
       : executableDir;
 
+    // @sparticuz/chromium's default args disable the Same-Origin Policy
+    // (intended for cross-origin scraping/testing use cases), but Cursor's
+    // billing page relies on a correct Origin header for its own CSRF/origin
+    // check on the data-fetching requests that populate the invoice table —
+    // with these flags present, that check rejects the requests with
+    // `{"error":"Invalid origin for state-changing request"}` (400/403s),
+    // and the page renders without any invoices. We don't need cross-origin
+    // security disabled for same-origin navigation + clicking, so strip them.
+    const unsafeOriginFlags = new Set([
+      "--disable-web-security",
+      "--disable-site-isolation-trials",
+      "--allow-running-insecure-content",
+    ]);
+    const args = chromiumBinary.default.args.filter((arg) => !unsafeOriginFlags.has(arg));
+
     return chromium.launch({
-      args: chromiumBinary.default.args,
+      args,
       executablePath,
       headless: options.headless ?? true,
     });
