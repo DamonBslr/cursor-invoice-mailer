@@ -1,21 +1,20 @@
-import { list, put } from "@vercel/blob";
+import { get, put } from "@vercel/blob";
 
 /**
  * Thin wrapper around @vercel/blob shared by the session and ledger stores.
  * Blobs are written with a stable pathname (no random suffix) so subsequent
- * runs can find the same object again via `list({ prefix })`.
+ * runs can find the same object again by pathname.
+ *
+ * Both blobs live in a private store: reads require an authenticated
+ * `get()` call (no public URL access), which matters since one of them is
+ * the encrypted login session.
  */
 
 export async function readBlob(pathname: string, token: string): Promise<string | null> {
-  const { blobs } = await list({ prefix: pathname, token, limit: 1 });
-  const match = blobs.find((b) => b.pathname === pathname);
-  if (!match) return null;
+  const result = await get(pathname, { access: "private", token });
+  if (!result) return null;
 
-  const res = await fetch(match.url);
-  if (!res.ok) {
-    throw new Error(`Failed to fetch blob "${pathname}": ${res.status} ${res.statusText}`);
-  }
-  return res.text();
+  return new Response(result.stream).text();
 }
 
 export async function writeBlob(
@@ -27,7 +26,7 @@ export async function writeBlob(
   // With addRandomSuffix: false, Vercel Blob overwrites any existing blob at
   // the same pathname, which is exactly what we want for a stable session/ledger key.
   await put(pathname, contents, {
-    access: "public",
+    access: "private",
     addRandomSuffix: false,
     contentType,
     token,

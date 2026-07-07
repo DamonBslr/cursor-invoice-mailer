@@ -73,8 +73,11 @@ right-click the actual download button → Inspect) and update
 ## Prerequisites
 
 - Node.js 18.18+
-- A [Vercel](https://vercel.com) project + a [Vercel Blob](https://vercel.com/docs/storage/vercel-blob)
-  store (used to persist the encrypted session and the sent-invoice ledger)
+- A [Vercel](https://vercel.com) project + a **private** [Vercel Blob](https://vercel.com/docs/vercel-blob/private-storage)
+  store (used to persist the encrypted session and the sent-invoice ledger).
+  Private storage is a store-level setting — create the store with
+  `vercel blob create-store <name> --access private`, or via the dashboard's
+  Storage tab (Create Database → Blob → set access to Private).
 - An SMTP account, or a [Resend](https://resend.com) / [SendGrid](https://sendgrid.com) API key
 
 ## Setup
@@ -194,14 +197,13 @@ using your configured `MAIL_PROVIDER`.
 - **No password on the server.** `CURSOR_LOGIN_EMAIL`/`CURSOR_LOGIN_PASSWORD`
   are read only by the local `bootstrap-login` script and are never uploaded
   or used by the deployed cron job.
-- **Session is encrypted at rest.** The Playwright `storageState` (cookies)
-  is encrypted with AES-256-GCM (`SESSION_ENCRYPTION_KEY`) before being
-  written to Vercel Blob. Vercel Blob's "public" access tier is used (a
-  private-token-gated tier isn't available for arbitrary blobs at the time
-  of writing) — the object is only reachable via its long random URL, and
-  even if that URL leaked, the contents are still encrypted. Keep
-  `SESSION_ENCRYPTION_KEY` and `BLOB_READ_WRITE_TOKEN` as secrets, never
-  commit them.
+- **Session is encrypted at rest, and the blob store is private.** The
+  Playwright `storageState` (cookies) is encrypted with AES-256-GCM
+  (`SESSION_ENCRYPTION_KEY`) before being written to Vercel Blob, and both
+  the session and the ledger are stored with `access: "private"` — reads
+  require an authenticated `get()` call with `BLOB_READ_WRITE_TOKEN`, there
+  is no publicly reachable URL. Keep `SESSION_ENCRYPTION_KEY` and
+  `BLOB_READ_WRITE_TOKEN` as secrets, never commit them.
 - **Cron route is authenticated.** `api/cron/invoice-mailer.ts` rejects any
   request whose `Authorization` header doesn't match `Bearer $CRON_SECRET`,
   which Vercel sends automatically for cron-triggered invocations once

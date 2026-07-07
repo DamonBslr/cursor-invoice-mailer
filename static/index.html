@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>cursor-invoice-mailer</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+        max-width: 640px;
+        margin: 4rem auto;
+        padding: 0 1.5rem;
+        color: #1a1a1a;
+        line-height: 1.5;
+      }
+      code {
+        background: #f2f2f2;
+        padding: 0.15rem 0.4rem;
+        border-radius: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>cursor-invoice-mailer</h1>
+    <p>
+      This deployment has no public frontend. It runs a scheduled
+      <a href="https://vercel.com/docs/cron-jobs">Vercel Cron</a> job at
+      <code>/api/cron/invoice-mailer</code> that fetches and emails Cursor
+      billing invoices.
+    </p>
+  </body>
+</html>
