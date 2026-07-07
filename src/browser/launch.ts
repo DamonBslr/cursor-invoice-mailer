@@ -1,3 +1,4 @@
+import { dirname } from "node:path";
 import type { Browser } from "playwright-core";
 
 /**
@@ -20,6 +21,18 @@ export async function launchBrowser(options: { headless?: boolean } = {}): Promi
     ]);
 
     const executablePath = await chromiumBinary.default.executablePath();
+
+    // Belt-and-suspenders: @sparticuz/chromium normally sets LD_LIBRARY_PATH
+    // itself (based on detecting the Lambda/Vercel runtime at import time),
+    // but that detection has broken before when Vercel changed which env
+    // vars it sets (see https://github.com/Sparticuz/chromium/pull/340) —
+    // the executable's shared libraries (e.g. libnss3.so) live alongside it,
+    // so pointing the linker at that directory works regardless of whether
+    // the package's own runtime detection succeeded.
+    const executableDir = dirname(executablePath);
+    process.env.LD_LIBRARY_PATH = process.env.LD_LIBRARY_PATH
+      ? [executableDir, ...new Set(process.env.LD_LIBRARY_PATH.split(":"))].join(":")
+      : executableDir;
 
     return chromium.launch({
       args: chromiumBinary.default.args,
