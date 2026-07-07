@@ -47,6 +47,29 @@ api/cron/invoice-mailer.ts   (Vercel Cron, daily)
    9. record sent invoice id(s) in the ledger
 ```
 
+## Stripe hosted invoices (important)
+
+Cursor bills through Stripe, and the "View" link next to each invoice on the
+billing page is a **Stripe Hosted Invoice Page**
+(`https://invoice.stripe.com/i/...`), not a direct PDF link. Stripe only
+exposes the real PDF download link *on* that hosted page, and explicitly
+blocks non-browser HTTP clients (e.g. plain `fetch`/`curl`) from requesting
+PDF URLs directly as an anti-scraping measure.
+
+To handle this correctly, `downloadInvoice()` (`src/browser/invoices.ts`):
+
+1. Opens the row's "View" link in a new browser tab (a real navigation, not
+   a raw HTTP request).
+2. Locates the PDF download control on that hosted page via
+   `INVOICE_PDF_LINK_SELECTOR`.
+3. Clicks it and captures Playwright's native `download` event — this looks
+   like genuine browser behavior to Stripe, unlike a scripted fetch.
+
+If invoice rows are found but PDF downloads fail or time out, inspect the
+hosted invoice page directly (open one "View" link in your own browser,
+right-click the actual download button → Inspect) and update
+`INVOICE_PDF_LINK_SELECTOR` to match.
+
 ## Prerequisites
 
 - Node.js 18.18+
@@ -111,6 +134,8 @@ the ledger. Check the logged output:
   / `INVOICE_DOWNLOAD_SELECTOR` in `.env` to match the actual page markup
   (open browser devtools on the real billing page to find the right
   selectors), then re-run.
+- If rows are found but the PDF download fails, adjust
+  `INVOICE_PDF_LINK_SELECTOR` — see [Stripe hosted invoices](#stripe-hosted-invoices-important) below.
 - If it reports the session looks expired, re-run `npm run bootstrap-login`.
 
 ### 5. Try a real send (optional, local)
@@ -142,10 +167,11 @@ using your configured `MAIL_PROVIDER`.
 
 | Variable | Purpose | Default |
 |---|---|---|
-| `INVOICE_SOURCE_URL` | Billing/invoice page to scrape | `https://cursor.com/settings/billing` |
+| `INVOICE_SOURCE_URL` | Billing/invoice page to scrape | `https://cursor.com/dashboard/billing` |
 | `INVOICE_ROW_SELECTOR` | CSS selector matching each invoice row | `[data-testid="invoice-row"], table tbody tr` |
 | `INVOICE_DATE_SELECTOR` | Selector (scoped to a row) for the invoice date | `[data-testid="invoice-date"], td:nth-child(1)` |
-| `INVOICE_DOWNLOAD_SELECTOR` | Selector (scoped to a row) for the download link/button | `a[href*="invoice"], a[download]` |
+| `INVOICE_DOWNLOAD_SELECTOR` | Selector (scoped to a row) for the "View" link (Stripe Hosted Invoice Page) | `td:last-child a[href]` |
+| `INVOICE_PDF_LINK_SELECTOR` | Selector for the real PDF link, evaluated on the hosted invoice page | `a[href*="/pdf"], a[href$=".pdf"], a:has-text("Download")` |
 | `INVOICE_COUNT` | How many latest invoices to check each run | `1` |
 | `RECIPIENT_EMAIL` | Destination address(es), comma-separated | — |
 | `MAIL_PROVIDER` | `smtp` \| `resend` \| `sendgrid` | `smtp` |
@@ -187,10 +213,14 @@ using your configured `MAIL_PROVIDER`.
 
 ## Known limitations / things to verify for your account
 
-- The default CSS selectors are best-effort placeholders — Cursor's actual
-  billing page markup wasn't available to inspect ahead of time. Run
-  `npm run run-once -- --dry-run` after bootstrapping and adjust
-  `INVOICE_*_SELECTOR` env vars if no rows are detected.
+- `INVOICE_ROW_SELECTOR`, `INVOICE_DATE_SELECTOR`, and `INVOICE_DOWNLOAD_SELECTOR`
+  defaults are confirmed against real Cursor billing page markup (a `<table>`
+  with one row per invoice). `INVOICE_PDF_LINK_SELECTOR` (which targets the
+  separate Stripe Hosted Invoice Page) is still a best-effort default since
+  that page's markup wasn't available to inspect ahead of time — see
+  [Stripe hosted invoices](#stripe-hosted-invoices-important). Run
+  `npm run run-once -- --dry-run` after bootstrapping and adjust selectors
+  if needed.
 - Vercel Cron's minimum interval is daily; true monthly-only delivery is
   achieved by the ledger dedupe logic, not by the schedule itself.
 - Running a full Chromium browser in a serverless function can exceed the

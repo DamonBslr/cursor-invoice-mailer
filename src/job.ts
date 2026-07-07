@@ -91,7 +91,7 @@ export async function runJob(options: RunJobOptions = {}): Promise<JobResult> {
 
     const downloaded: DownloadedInvoice[] = [];
     for (const invoice of newInvoices) {
-      const result = await withRetry(() => downloadInvoice(page, context, invoice, tmpDir, config), {
+      const result = await withRetry(() => downloadInvoice(context, invoice, tmpDir, config), {
         ...retryDefaults,
         label: `downloadInvoice:${invoice.id}`,
       });
@@ -125,10 +125,9 @@ export async function runJob(options: RunJobOptions = {}): Promise<JobResult> {
       })),
     );
 
+    const dateTexts = downloaded.map((d) => d.dateText);
     const subject =
-      downloaded.length === 1
-        ? `Cursor Invoice — ${downloaded[0]!.dateText}`
-        : `Cursor Invoices — ${downloaded.map((d) => d.dateText).join(", ")}`;
+      dateTexts.length === 1 ? `Cursor Invoice — ${dateTexts[0]}` : `Cursor Invoices — ${dateTexts.join(", ")}`;
 
     await withRetry(
       () =>

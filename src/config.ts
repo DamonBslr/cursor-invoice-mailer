@@ -10,11 +10,19 @@ const envSchema = z.object({
   CURSOR_LOGIN_EMAIL: z.string().email().optional(),
   CURSOR_LOGIN_PASSWORD: z.string().optional(),
 
-  // Invoice source
-  INVOICE_SOURCE_URL: z.string().url().default("https://cursor.com/settings/billing"),
-  INVOICE_ROW_SELECTOR: z.string().default('[data-testid="invoice-row"], table tbody tr'),
-  INVOICE_DATE_SELECTOR: z.string().default('[data-testid="invoice-date"], td:nth-child(1)'),
-  INVOICE_DOWNLOAD_SELECTOR: z.string().default('a[href*="invoice"], a[download]'),
+  // Invoice source. Defaults confirmed against Cursor's actual billing page
+  // markup (a <table> of invoices whose last column links to a Stripe
+  // Hosted Invoice Page — see src/browser/invoices.ts for why that's a
+  // separate hop from the actual PDF).
+  INVOICE_SOURCE_URL: z.string().url().default("https://cursor.com/dashboard/billing"),
+  INVOICE_ROW_SELECTOR: z.string().default("table tbody tr"),
+  INVOICE_DATE_SELECTOR: z.string().default("td:nth-child(1)"),
+  INVOICE_DOWNLOAD_SELECTOR: z.string().default("td:last-child a[href]"),
+  // Selector for the actual PDF download link, evaluated on the Stripe
+  // Hosted Invoice Page (not on the billing table row).
+  INVOICE_PDF_LINK_SELECTOR: z
+    .string()
+    .default('a[href*="/pdf"], a[href$=".pdf"], a:has-text("Download")'),
   INVOICE_COUNT: z.coerce.number().int().positive().default(1),
 
   // Recipient(s) — comma separated
