@@ -8,7 +8,7 @@
     "node": ">=18.18"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json && mkdir -p public",
     "bootstrap-login": "tsx scripts/bootstrap-login.ts",
     "run-once": "tsx scripts/run-once.ts",
     "typecheck": "tsc --noEmit",
