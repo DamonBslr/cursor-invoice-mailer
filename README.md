@@ -65,6 +65,12 @@ To handle this correctly, `downloadInvoice()` (`src/browser/invoices.ts`):
 3. Clicks it and captures Playwright's native `download` event — this looks
    like genuine browser behavior to Stripe, unlike a scripted fetch.
 
+Note the download control is a `<button>` with no `href` (Stripe generates
+the PDF client-side), not an `<a>` tag — `INVOICE_PDF_LINK_SELECTOR` matches
+on its "Download invoice" text accordingly. The page also has a separate
+"Download receipt" button (the payment receipt, not the invoice) right next
+to it, which the selector deliberately does not match.
+
 If invoice rows are found but PDF downloads fail or time out, inspect the
 hosted invoice page directly (open one "View" link in your own browser,
 right-click the actual download button → Inspect) and update
@@ -171,10 +177,10 @@ using your configured `MAIL_PROVIDER`.
 | Variable | Purpose | Default |
 |---|---|---|
 | `INVOICE_SOURCE_URL` | Billing/invoice page to scrape | `https://cursor.com/dashboard/billing` |
-| `INVOICE_ROW_SELECTOR` | CSS selector matching each invoice row | `[data-testid="invoice-row"], table tbody tr` |
+| `INVOICE_ROW_SELECTOR` | CSS selector matching each invoice row | `table:has(th:has-text("Invoice")) tbody tr` |
 | `INVOICE_DATE_SELECTOR` | Selector (scoped to a row) for the invoice date | `[data-testid="invoice-date"], td:nth-child(1)` |
 | `INVOICE_DOWNLOAD_SELECTOR` | Selector (scoped to a row) for the "View" link (Stripe Hosted Invoice Page) | `td:last-child a[href]` |
-| `INVOICE_PDF_LINK_SELECTOR` | Selector for the real PDF link, evaluated on the hosted invoice page | `a[href*="/pdf"], a[href$=".pdf"], a:has-text("Download")` |
+| `INVOICE_PDF_LINK_SELECTOR` | Selector for the real PDF download control, evaluated on the hosted invoice page | `button:has-text("Download invoice"), a[href*="/pdf"], a[href$=".pdf"]` |
 | `INVOICE_COUNT` | How many latest invoices to check each run | `1` |
 | `RECIPIENT_EMAIL` | Destination address(es), comma-separated | — |
 | `MAIL_PROVIDER` | `smtp` \| `resend` \| `sendgrid` | `smtp` |
@@ -217,12 +223,22 @@ using your configured `MAIL_PROVIDER`.
 
 - `INVOICE_ROW_SELECTOR`, `INVOICE_DATE_SELECTOR`, and `INVOICE_DOWNLOAD_SELECTOR`
   defaults are confirmed against real Cursor billing page markup (a `<table>`
-  with one row per invoice). `INVOICE_PDF_LINK_SELECTOR` (which targets the
-  separate Stripe Hosted Invoice Page) is still a best-effort default since
-  that page's markup wasn't available to inspect ahead of time — see
-  [Stripe hosted invoices](#stripe-hosted-invoices-important). Run
+  with one row per invoice). The billing page also renders a separate,
+  unrelated per-model usage cost breakdown `<table>` above the invoices
+  table, so `INVOICE_ROW_SELECTOR` is scoped to the table whose header row
+  contains "Invoice" (`table:has(th:has-text("Invoice")) tbody tr`) rather
+  than matching every `<table>` on the page. `INVOICE_PDF_LINK_SELECTOR`
+  (which targets the separate Stripe Hosted Invoice Page) is confirmed
+  against real markup too — see
+  [Stripe hosted invoices](#stripe-hosted-invoices-important) for why it
+  targets a `<button>` by text rather than an `<a href>`. Run
   `npm run run-once -- --dry-run` after bootstrapping and adjust selectors
-  if needed.
+  if your account's page differs.
+- The billing dashboard is client-rendered: the invoice table is empty at
+  `domcontentloaded` and only populates after the page hydrates and its data
+  fetch resolves. `scrapeInvoices` (`src/browser/invoices.ts`) waits (up to
+  20s) for a matching row to appear before counting rows, rather than
+  scraping immediately after navigation.
 - Vercel Cron's minimum interval is daily; true monthly-only delivery is
   achieved by the ledger dedupe logic, not by the schedule itself.
 - Running a full Chromium browser in a serverless function can exceed the

@@ -50,9 +50,16 @@ export async function navigateToInvoicePage(page: Page, config: Config): Promise
  * page lists invoices newest-first (confirmed against the real markup: a
  * `<table>` with one `<tr>` per invoice, date in the first `<td>`, and a
  * "View" link — the Stripe Hosted Invoice Page — in the last `<td>`).
+ *
+ * The dashboard is client-rendered: the table is empty at `domcontentloaded`
+ * and only populates once the page hydrates and its billing data fetch
+ * resolves. We wait for at least one matching row to appear (bounded, so a
+ * genuinely selector mismatch or empty account still resolves) rather than
+ * scraping immediately.
  */
 export async function scrapeInvoices(page: Page, config: Config): Promise<InvoiceInfo[]> {
   const rows = page.locator(config.INVOICE_ROW_SELECTOR);
+  await rows.first().waitFor({ state: "attached", timeout: 20_000 }).catch(() => undefined);
   const count = await rows.count();
 
   const invoices: InvoiceInfo[] = [];

@@ -15,14 +15,14 @@ const envSchema = z.object({
   // Hosted Invoice Page — see src/browser/invoices.ts for why that's a
   // separate hop from the actual PDF).
   INVOICE_SOURCE_URL: z.string().url().default("https://cursor.com/dashboard/billing"),
-  INVOICE_ROW_SELECTOR: z.string().default("table tbody tr"),
+  INVOICE_ROW_SELECTOR: z.string().default('table:has(th:has-text("Invoice")) tbody tr'),
   INVOICE_DATE_SELECTOR: z.string().default("td:nth-child(1)"),
   INVOICE_DOWNLOAD_SELECTOR: z.string().default("td:last-child a[href]"),
   // Selector for the actual PDF download link, evaluated on the Stripe
   // Hosted Invoice Page (not on the billing table row).
   INVOICE_PDF_LINK_SELECTOR: z
     .string()
-    .default('a[href*="/pdf"], a[href$=".pdf"], a:has-text("Download")'),
+    .default('button:has-text("Download invoice"), a[href*="/pdf"], a[href$=".pdf"]'),
   INVOICE_COUNT: z.coerce.number().int().positive().default(1),
 
   // Recipient(s) — comma separated
