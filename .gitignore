@@ -1,0 +1,20 @@
+node_modules/
+dist/
+.env
+.env.local
+*.log
+
+# local-only artifacts from bootstrap/run-once scripts — never commit session data
+.local/
+session.local.enc
+ledger.local.json
+/tmp-invoices/
+
+# Playwright
+test-results/
+playwright-report/
+blob-report/
+playwright/.cache/
+
+# Vercel
+.vercel

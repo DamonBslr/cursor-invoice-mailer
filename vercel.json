@@ -1,0 +1,14 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/invoice-mailer",
+      "schedule": "0 9 * * *"
+    }
+  ],
+  "functions": {
+    "api/cron/invoice-mailer.ts": {
+      "maxDuration": 120,
+      "memory": 1536
+    }
+  }
+}
