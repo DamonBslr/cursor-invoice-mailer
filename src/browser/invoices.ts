@@ -28,9 +28,14 @@ export interface DownloadedInvoice extends InvoiceInfo {
  * actionable error if the session turns out to be invalid/expired (detected
  * via a redirect to a login-looking URL or the presence of a password
  * field), rather than failing confusingly deeper in the scrape step.
+ *
+ * Returns the navigation's HTTP status (when available) so callers can
+ * distinguish a normal 200 response that simply didn't render the expected
+ * content (e.g. a server-side data fetch failure) from a non-200 response
+ * (e.g. a bot-mitigation block) that never reaches that page at all.
  */
-export async function navigateToInvoicePage(page: Page, config: Config): Promise<void> {
-  await page.goto(config.INVOICE_SOURCE_URL, { waitUntil: "domcontentloaded" });
+export async function navigateToInvoicePage(page: Page, config: Config): Promise<{ httpStatus: number | null }> {
+  const response = await page.goto(config.INVOICE_SOURCE_URL, { waitUntil: "domcontentloaded" });
 
   const looksLikeLogin =
     /\/(login|sign-?in|auth)(\/|$|\?)/i.test(page.url()) ||
@@ -42,6 +47,8 @@ export async function navigateToInvoicePage(page: Page, config: Config): Promise
         `Re-run "npm run bootstrap-login" to capture a fresh session.`,
     );
   }
+
+  return { httpStatus: response?.status() ?? null };
 }
 
 /**

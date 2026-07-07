@@ -59,7 +59,18 @@ export async function runJob(options: RunJobOptions = {}): Promise<JobResult> {
     await applyStealth(context);
     const page = await context.newPage();
 
-    await withRetry(() => navigateToInvoicePage(page, config), { ...retryDefaults, label: "navigateToInvoicePage" });
+    // Captured for the zero-rows diagnostics below — if the page's own JS
+    // threw (rather than the invoice data merely not being there), this is
+    // usually the fastest way to find out why.
+    const consoleMessages: string[] = [];
+    const pageErrors: string[] = [];
+    page.on("console", (msg) => consoleMessages.push(`[${msg.type()}] ${msg.text()}`));
+    page.on("pageerror", (err) => pageErrors.push(err.message));
+
+    const { httpStatus } = await withRetry(() => navigateToInvoicePage(page, config), {
+      ...retryDefaults,
+      label: "navigateToInvoicePage",
+    });
     const invoices = await withRetry(() => scrapeInvoices(page, config), { ...retryDefaults, label: "scrapeInvoices" });
 
     logger.info({ found: invoices.length }, "Scraped invoice rows");
@@ -77,12 +88,21 @@ export async function runJob(options: RunJobOptions = {}): Promise<JobResult> {
           return {
             title: doc?.title ?? "",
             bodyTextLength: bodyText.length,
-            hasInvoicesHeading: bodyText.includes("Invoices"),
+            bodyTextSample: bodyText.slice(0, 2000),
             tableCount: doc?.querySelectorAll("table").length ?? 0,
           };
         })
         .catch((err) => ({ evalError: err instanceof Error ? err.message : String(err) }));
-      logger.warn({ url: page.url(), diagnostics }, "No invoice rows matched — diagnostics for this page load");
+      logger.warn(
+        {
+          url: page.url(),
+          httpStatus,
+          diagnostics,
+          consoleMessages: consoleMessages.slice(-20),
+          pageErrors: pageErrors.slice(-20),
+        },
+        "No invoice rows matched — diagnostics for this page load",
+      );
 
       await touchLedger(await loadLedger(config), config);
       return {
