@@ -12,7 +12,21 @@
  * (cookies/localStorage) is encrypted and uploaded to Vercel Blob, where the
  * scheduled cron job will load it from on every run — no password is ever
  * stored or reused by the automated job itself.
+ *
+ * Bot-detection note: login/billing pages are frequently protected by
+ * behavioral bot checks (Cloudflare Turnstile, Vercel BotID, etc.) that key
+ * off two things Playwright's defaults trip almost immediately:
+ *   1. Playwright's bundled Chromium build has a distinct, widely-fingerprinted
+ *      automation signature — a real, already-installed Chrome is much less
+ *      likely to be flagged, so we prefer `channel: "chrome"` when available.
+ *   2. `locator.fill()` sets the DOM value directly without dispatching real
+ *      key events, and clicking immediately after is an inhumanly fast
+ *      sequence — we type character-by-character with randomized delay and
+ *      pause before submitting instead.
+ * None of this defeats every bot check, but it removes the most obvious
+ * automation tells before falling back to you completing the flow by hand.
  */
+import "dotenv/config";
 import { createInterface } from "node:readline/promises";
 import { chromium } from "playwright";
 import { loadConfig } from "../src/config.js";
@@ -24,12 +38,44 @@ async function promptEnter(question: string): Promise<void> {
   rl.close();
 }
 
+function randomDelay(minMs: number, maxMs: number): Promise<void> {
+  const ms = minMs + Math.random() * (maxMs - minMs);
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function launchLeastDetectableBrowser() {
+  const launchArgs = {
+    headless: false,
+    args: ["--disable-blink-features=AutomationControlled"],
+  };
+
+  try {
+    // Prefer a real, already-installed Chrome — Playwright's own bundled
+    // Chromium binary is far more commonly fingerprinted by bot detection.
+    return await chromium.launch({ ...launchArgs, channel: "chrome" });
+  } catch {
+    console.log('No system Chrome found for channel "chrome" — falling back to Playwright\'s bundled Chromium.');
+    return chromium.launch(launchArgs);
+  }
+}
+
 async function main(): Promise<void> {
   const config = loadConfig();
 
   console.log(`Opening a browser to ${config.INVOICE_SOURCE_URL} ...`);
-  const browser = await chromium.launch({ headless: false });
+  const browser = await launchLeastDetectableBrowser();
   const context = await browser.newContext();
+
+  // Mask the most commonly checked automation fingerprints. Applied before
+  // any page script runs, in every frame.
+  await context.addInitScript(() => {
+    Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+    // @ts-expect-error - non-standard, only present when Chrome DevTools Protocol drives the page
+    window.chrome = window.chrome || { runtime: {} };
+    Object.defineProperty(navigator, "plugins", { get: () => [1, 2, 3, 4, 5] });
+    Object.defineProperty(navigator, "languages", { get: () => ["en-US", "en"] });
+  });
+
   const page = await context.newPage();
 
   await page.goto(config.INVOICE_SOURCE_URL, { waitUntil: "domcontentloaded" });
@@ -38,13 +84,18 @@ async function main(): Promise<void> {
     try {
       const emailField = page.locator('input[type="email"], input[name="email"]').first();
       if (await emailField.isVisible({ timeout: 5000 })) {
-        await emailField.fill(config.CURSOR_LOGIN_EMAIL);
+        await emailField.click();
+        await randomDelay(150, 400);
+        await emailField.pressSequentially(config.CURSOR_LOGIN_EMAIL, { delay: 60 + Math.random() * 80 });
         console.log("Auto-filled email address.");
 
         if (config.CURSOR_LOGIN_PASSWORD) {
           const passwordField = page.locator('input[type="password"]').first();
           if (await passwordField.isVisible({ timeout: 5000 }).catch(() => false)) {
-            await passwordField.fill(config.CURSOR_LOGIN_PASSWORD);
+            await randomDelay(200, 500);
+            await passwordField.click();
+            await randomDelay(150, 400);
+            await passwordField.pressSequentially(config.CURSOR_LOGIN_PASSWORD, { delay: 60 + Math.random() * 80 });
             console.log("Auto-filled password.");
           }
         }
@@ -53,6 +104,7 @@ async function main(): Promise<void> {
           .locator('button[type="submit"], button:has-text("Continue"), button:has-text("Sign in"), button:has-text("Log in")')
           .first();
         if (await submitButton.isVisible({ timeout: 2000 }).catch(() => false)) {
+          await randomDelay(400, 900);
           await submitButton.click();
           console.log("Submitted login form.");
         }

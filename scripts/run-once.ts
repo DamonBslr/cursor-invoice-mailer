@@ -8,6 +8,7 @@
  *   npm run run-once                 # real run (sends email if a new invoice is found)
  *   npm run run-once -- --dry-run    # scrapes + downloads but never sends or updates the ledger
  */
+import "dotenv/config";
 import { runJob } from "../src/job.js";
 
 const dryRunFlag = process.argv.includes("--dry-run");

@@ -15,9 +15,10 @@
     "lint": "eslint . --ext .ts"
   },
   "dependencies": {
-    "@sparticuz/chromium": "^131.0.1",
     "@sendgrid/mail": "^8.1.4",
+    "@sparticuz/chromium": "^131.0.1",
     "@vercel/blob": "^2.5.0",
+    "dotenv": "^17.4.2",
     "nodemailer": "^6.9.16",
     "pino": "^9.5.0",
     "pino-pretty": "^11.3.0",
@@ -27,10 +28,10 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.2",
-    "@vercel/node": "^3.2.24",
     "@types/nodemailer": "^6.4.17",
     "@typescript-eslint/eslint-plugin": "^8.18.1",
     "@typescript-eslint/parser": "^8.18.1",
+    "@vercel/node": "^3.2.24",
     "eslint": "^8.57.1",
     "playwright": "^1.49.1",
     "tsx": "^4.19.2",
