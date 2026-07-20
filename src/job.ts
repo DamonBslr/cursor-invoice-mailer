@@ -137,14 +137,19 @@ export async function runJob(options: RunJobOptions = {}): Promise<JobResult> {
         label: `downloadInvoice:${invoice.id}`,
       });
       downloaded.push(result);
-      logger.info({ invoiceId: invoice.id, fileName: result.fileName }, "Downloaded invoice PDF");
+      logger.info(
+        { invoiceId: invoice.id, files: result.files.map((f) => f.fileName) },
+        "Downloaded invoice and receipt PDFs",
+      );
     }
+
+    const attachmentNames = downloaded.flatMap((d) => d.files.map((f) => f.fileName));
 
     if (dryRun) {
       logger.info(
         {
           wouldSendTo: config.recipients,
-          attachments: downloaded.map((d) => d.fileName),
+          attachments: attachmentNames,
         },
         "DRY_RUN enabled — skipping email send and ledger update",
       );
@@ -153,22 +158,26 @@ export async function runJob(options: RunJobOptions = {}): Promise<JobResult> {
         dryRun,
         sentInvoiceIds: [],
         skippedAlreadySent: alreadySent,
-        message: `Dry run: would have emailed ${downloaded.length} invoice(s) to ${config.recipients.join(", ")}.`,
+        message: `Dry run: would have emailed ${downloaded.length} invoice(s) with receipt(s) to ${config.recipients.join(", ")}.`,
       };
     }
 
     const mailer = await createMailer(config);
     const attachments = await Promise.all(
-      downloaded.map(async (d) => ({
-        filename: d.fileName,
-        content: await readFile(d.filePath),
-        contentType: "application/pdf",
-      })),
+      downloaded.flatMap((d) =>
+        d.files.map(async (f) => ({
+          filename: f.fileName,
+          content: await readFile(f.filePath),
+          contentType: "application/pdf",
+        })),
+      ),
     );
 
     const dateTexts = downloaded.map((d) => d.dateText);
     const subject =
-      dateTexts.length === 1 ? `Cursor Invoice — ${dateTexts[0]}` : `Cursor Invoices — ${dateTexts.join(", ")}`;
+      dateTexts.length === 1
+        ? `Cursor Invoice & Receipt — ${dateTexts[0]}`
+        : `Cursor Invoices & Receipts — ${dateTexts.join(", ")}`;
 
     await withRetry(
       () =>
@@ -176,7 +185,7 @@ export async function runJob(options: RunJobOptions = {}): Promise<JobResult> {
           to: config.recipients,
           from: config.MAIL_FROM,
           subject,
-          text: `Attached: ${downloaded.length} Cursor invoice(s) (${downloaded.map((d) => d.dateText).join(", ")}).`,
+          text: `Attached: invoice and receipt PDFs for ${downloaded.length} Cursor billing period(s) (${downloaded.map((d) => d.dateText).join(", ")}).`,
           attachments,
         }),
       { ...retryDefaults, label: "sendEmail" },
@@ -187,14 +196,14 @@ export async function runJob(options: RunJobOptions = {}): Promise<JobResult> {
       updatedLedger = await recordSent(updatedLedger, invoice.id, config);
     }
 
-    logger.info({ sent: newInvoices.map((i) => i.id) }, "Emailed invoice(s) and updated ledger");
+    logger.info({ sent: newInvoices.map((i) => i.id), attachments: attachmentNames }, "Emailed invoice(s) and receipt(s) and updated ledger");
 
     return {
       runId,
       dryRun,
       sentInvoiceIds: newInvoices.map((i) => i.id),
       skippedAlreadySent: alreadySent,
-      message: `Emailed ${downloaded.length} invoice(s) to ${config.recipients.join(", ")}.`,
+      message: `Emailed ${downloaded.length} invoice(s) with receipt(s) to ${config.recipients.join(", ")}.`,
     };
   } finally {
     await browser.close().catch(() => undefined);

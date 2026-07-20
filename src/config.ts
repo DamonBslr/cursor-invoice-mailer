@@ -18,11 +18,13 @@ const envSchema = z.object({
   INVOICE_ROW_SELECTOR: z.string().default('table:has(th:has-text("Invoice")) tbody tr'),
   INVOICE_DATE_SELECTOR: z.string().default("td:nth-child(1)"),
   INVOICE_DOWNLOAD_SELECTOR: z.string().default("td:last-child a[href]"),
-  // Selector for the actual PDF download link, evaluated on the Stripe
-  // Hosted Invoice Page (not on the billing table row).
+  // Selectors for the actual PDF download controls, evaluated on the Stripe
+  // Hosted Invoice Page (not on the billing table row). That page exposes
+  // separate "Download invoice" and "Download receipt" buttons.
   INVOICE_PDF_LINK_SELECTOR: z
     .string()
     .default('button:has-text("Download invoice"), a[href*="/pdf"], a[href$=".pdf"]'),
+  RECEIPT_PDF_LINK_SELECTOR: z.string().default('button:has-text("Download receipt")'),
   INVOICE_COUNT: z.coerce.number().int().positive().default(1),
 
   // Recipient(s) — comma separated

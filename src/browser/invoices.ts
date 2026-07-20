@@ -12,15 +12,23 @@ export interface InvoiceInfo {
   /**
    * Absolute URL to the invoice's "View" link. For Cursor (Stripe-billed)
    * this is a Stripe Hosted Invoice Page, NOT a direct PDF — the real PDF
-   * link only exists on that hosted page, see {@link downloadInvoice}.
+   * links only exist on that hosted page, see {@link downloadInvoice}.
    */
   viewUrl: string | null;
   rowIndex: number;
 }
 
-export interface DownloadedInvoice extends InvoiceInfo {
+export type PdfKind = "invoice" | "receipt";
+
+export interface DownloadedPdf {
+  kind: PdfKind;
   filePath: string;
   fileName: string;
+}
+
+export interface DownloadedInvoice extends InvoiceInfo {
+  /** Invoice PDF plus receipt PDF, in that order when both succeed. */
+  files: DownloadedPdf[];
 }
 
 /**
@@ -101,16 +109,50 @@ export async function scrapeInvoices(page: Page, config: Config): Promise<Invoic
   return invoices;
 }
 
+function safeDateSlug(invoice: InvoiceInfo): string {
+  return invoice.dateText.replace(/[^\w-]+/g, "_") || invoice.id;
+}
+
 /**
- * Downloads a single invoice PDF.
+ * Clicks a PDF download control on the hosted invoice page and saves the
+ * resulting native `download` event. Stripe generates PDFs client-side and
+ * rejects non-browser HTTP clients, so this must stay a real browser click.
+ */
+async function clickAndSavePdf(
+  context: BrowserContext,
+  page: Page,
+  selector: string,
+  filePath: string,
+  label: string,
+  viewUrl: string,
+): Promise<void> {
+  const pdfLink = page.locator(selector).first();
+  await pdfLink.waitFor({ state: "visible", timeout: 20_000 }).catch(() => {
+    throw new Error(
+      `Could not find a ${label} download link on the hosted invoice page (${viewUrl}). ` +
+        `Check the matching *_PDF_LINK_SELECTOR against that page's markup.`,
+    );
+  });
+
+  // Listen on the context (not just this page) in case the link opens the
+  // PDF in yet another tab rather than downloading in-place.
+  const [download] = await Promise.all([
+    context.waitForEvent("download", { timeout: 30_000 }),
+    pdfLink.click(),
+  ]);
+  await download.saveAs(filePath);
+}
+
+/**
+ * Downloads the invoice PDF and payment receipt PDF for a single billing row.
  *
  * Cursor's "View" link points to a Stripe Hosted Invoice Page (view/pay
- * page), not the PDF itself — Stripe only exposes the real PDF link on that
- * page. Stripe also explicitly rejects non-browser HTTP clients requesting
- * PDF URLs directly (documented anti-scraping behavior), so this
- * deliberately drives a real browser tab and clicks the PDF link rather
- * than fetching it out-of-band, and captures the resulting native
- * `download` event.
+ * page), not the PDFs themselves — Stripe only exposes the real download
+ * controls on that hosted page. Stripe also explicitly rejects non-browser
+ * HTTP clients requesting PDF URLs directly (documented anti-scraping
+ * behavior), so this deliberately drives a real browser tab and clicks each
+ * download control rather than fetching out-of-band, and captures the
+ * resulting native `download` events.
  */
 export async function downloadInvoice(
   context: BrowserContext,
@@ -126,31 +168,41 @@ export async function downloadInvoice(
   }
 
   await mkdir(destDir, { recursive: true });
-  const fileName = `invoice-${invoice.dateText.replace(/[^\w-]+/g, "_") || invoice.id}.pdf`;
-  const filePath = path.join(destDir, fileName);
+  const slug = safeDateSlug(invoice);
+  const invoiceFileName = `invoice-${slug}.pdf`;
+  const receiptFileName = `receipt-${slug}.pdf`;
+  const invoiceFilePath = path.join(destDir, invoiceFileName);
+  const receiptFilePath = path.join(destDir, receiptFileName);
 
   const invoicePage = await context.newPage();
   try {
     await invoicePage.goto(invoice.viewUrl, { waitUntil: "domcontentloaded" });
 
-    const pdfLink = invoicePage.locator(config.INVOICE_PDF_LINK_SELECTOR).first();
-    await pdfLink.waitFor({ state: "visible", timeout: 20_000 }).catch(() => {
-      throw new Error(
-        `Could not find a PDF download link on the hosted invoice page (${invoice.viewUrl}). ` +
-          `Check INVOICE_PDF_LINK_SELECTOR against that page's markup.`,
-      );
-    });
-
-    // Listen on the context (not just this page) in case the link opens the
-    // PDF in yet another tab rather than downloading in-place.
-    const [download] = await Promise.all([
-      context.waitForEvent("download", { timeout: 30_000 }),
-      pdfLink.click(),
-    ]);
-    await download.saveAs(filePath);
+    await clickAndSavePdf(
+      context,
+      invoicePage,
+      config.INVOICE_PDF_LINK_SELECTOR,
+      invoiceFilePath,
+      "invoice",
+      invoice.viewUrl,
+    );
+    await clickAndSavePdf(
+      context,
+      invoicePage,
+      config.RECEIPT_PDF_LINK_SELECTOR,
+      receiptFilePath,
+      "receipt",
+      invoice.viewUrl,
+    );
   } finally {
     await invoicePage.close().catch(() => undefined);
   }
 
-  return { ...invoice, filePath, fileName };
+  return {
+    ...invoice,
+    files: [
+      { kind: "invoice", filePath: invoiceFilePath, fileName: invoiceFileName },
+      { kind: "receipt", filePath: receiptFilePath, fileName: receiptFileName },
+    ],
+  };
 }

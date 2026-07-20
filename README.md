@@ -1,8 +1,8 @@
 # Cursor Invoice Mailer
 
-Automates fetching your latest Cursor billing invoice(s) and emailing them as
-PDF attachments. Built with Playwright + TypeScript, deployed as a Vercel
-Cron job.
+Automates fetching your latest Cursor billing invoice(s) and payment
+receipt(s), and emailing them as PDF attachments. Built with Playwright +
+TypeScript, deployed as a Vercel Cron job.
 
 - **Session reuse, not password automation on every run.** You log in once,
   locally, in a real browser (`npm run bootstrap-login`). The resulting
@@ -41,7 +41,7 @@ api/cron/invoice-mailer.ts   (Vercel Cron, daily)
    3. navigate to INVOICE_SOURCE_URL
    4. scrape invoice rows (configurable selectors)
    5. skip invoices already recorded in the ledger
-   6. download new invoice PDF(s)
+   6. download new invoice + receipt PDF(s)
    7. DRY_RUN? → log what would be sent, stop here
    8. email PDF(s) via SMTP / Resend / SendGrid
    9. record sent invoice id(s) in the ledger
@@ -52,7 +52,7 @@ api/cron/invoice-mailer.ts   (Vercel Cron, daily)
 Cursor bills through Stripe, and the "View" link next to each invoice on the
 billing page is a **Stripe Hosted Invoice Page**
 (`https://invoice.stripe.com/i/...`), not a direct PDF link. Stripe only
-exposes the real PDF download link *on* that hosted page, and explicitly
+exposes the real PDF download controls *on* that hosted page, and explicitly
 blocks non-browser HTTP clients (e.g. plain `fetch`/`curl`) from requesting
 PDF URLs directly as an anti-scraping measure.
 
@@ -60,21 +60,22 @@ To handle this correctly, `downloadInvoice()` (`src/browser/invoices.ts`):
 
 1. Opens the row's "View" link in a new browser tab (a real navigation, not
    a raw HTTP request).
-2. Locates the PDF download control on that hosted page via
-   `INVOICE_PDF_LINK_SELECTOR`.
-3. Clicks it and captures Playwright's native `download` event — this looks
-   like genuine browser behavior to Stripe, unlike a scripted fetch.
+2. Locates the invoice PDF download control via `INVOICE_PDF_LINK_SELECTOR`
+   and the receipt PDF control via `RECEIPT_PDF_LINK_SELECTOR`.
+3. Clicks each in turn and captures Playwright's native `download` event —
+   this looks like genuine browser behavior to Stripe, unlike a scripted
+   fetch.
 
-Note the download control is a `<button>` with no `href` (Stripe generates
-the PDF client-side), not an `<a>` tag — `INVOICE_PDF_LINK_SELECTOR` matches
-on its "Download invoice" text accordingly. The page also has a separate
-"Download receipt" button (the payment receipt, not the invoice) right next
-to it, which the selector deliberately does not match.
+Both download controls are `<button>`s with no `href` (Stripe generates the
+PDFs client-side), not `<a>` tags — the selectors match on "Download
+invoice" / "Download receipt" text accordingly. Each emailed billing period
+therefore includes two attachments: `invoice-<date>.pdf` and
+`receipt-<date>.pdf`.
 
 If invoice rows are found but PDF downloads fail or time out, inspect the
 hosted invoice page directly (open one "View" link in your own browser,
 right-click the actual download button → Inspect) and update
-`INVOICE_PDF_LINK_SELECTOR` to match.
+`INVOICE_PDF_LINK_SELECTOR` / `RECEIPT_PDF_LINK_SELECTOR` to match.
 
 ## Prerequisites
 
@@ -143,8 +144,9 @@ the ledger. Check the logged output:
   / `INVOICE_DOWNLOAD_SELECTOR` in `.env` to match the actual page markup
   (open browser devtools on the real billing page to find the right
   selectors), then re-run.
-- If rows are found but the PDF download fails, adjust
-  `INVOICE_PDF_LINK_SELECTOR` — see [Stripe hosted invoices](#stripe-hosted-invoices-important) below.
+- If rows are found but a PDF download fails, adjust
+  `INVOICE_PDF_LINK_SELECTOR` / `RECEIPT_PDF_LINK_SELECTOR` — see
+  [Stripe hosted invoices](#stripe-hosted-invoices-important) below.
 - If it reports the session looks expired, re-run `npm run bootstrap-login`.
 
 ### 5. Try a real send (optional, local)
@@ -180,7 +182,8 @@ using your configured `MAIL_PROVIDER`.
 | `INVOICE_ROW_SELECTOR` | CSS selector matching each invoice row | `table:has(th:has-text("Invoice")) tbody tr` |
 | `INVOICE_DATE_SELECTOR` | Selector (scoped to a row) for the invoice date | `[data-testid="invoice-date"], td:nth-child(1)` |
 | `INVOICE_DOWNLOAD_SELECTOR` | Selector (scoped to a row) for the "View" link (Stripe Hosted Invoice Page) | `td:last-child a[href]` |
-| `INVOICE_PDF_LINK_SELECTOR` | Selector for the real PDF download control, evaluated on the hosted invoice page | `button:has-text("Download invoice"), a[href*="/pdf"], a[href$=".pdf"]` |
+| `INVOICE_PDF_LINK_SELECTOR` | Selector for the invoice PDF download control, evaluated on the hosted invoice page | `button:has-text("Download invoice"), a[href*="/pdf"], a[href$=".pdf"]` |
+| `RECEIPT_PDF_LINK_SELECTOR` | Selector for the receipt PDF download control, evaluated on the hosted invoice page | `button:has-text("Download receipt")` |
 | `INVOICE_COUNT` | How many latest invoices to check each run | `1` |
 | `RECIPIENT_EMAIL` | Destination address(es), comma-separated | — |
 | `MAIL_PROVIDER` | `smtp` \| `resend` \| `sendgrid` | `smtp` |
@@ -228,10 +231,10 @@ using your configured `MAIL_PROVIDER`.
   table, so `INVOICE_ROW_SELECTOR` is scoped to the table whose header row
   contains "Invoice" (`table:has(th:has-text("Invoice")) tbody tr`) rather
   than matching every `<table>` on the page. `INVOICE_PDF_LINK_SELECTOR`
-  (which targets the separate Stripe Hosted Invoice Page) is confirmed
-  against real markup too — see
-  [Stripe hosted invoices](#stripe-hosted-invoices-important) for why it
-  targets a `<button>` by text rather than an `<a href>`. Run
+  and `RECEIPT_PDF_LINK_SELECTOR` (which target the separate Stripe Hosted
+  Invoice Page) are confirmed against real markup too — see
+  [Stripe hosted invoices](#stripe-hosted-invoices-important) for why they
+  target `<button>`s by text rather than `<a href>`. Run
   `npm run run-once -- --dry-run` after bootstrapping and adjust selectors
   if your account's page differs.
 - The billing dashboard is client-rendered: the invoice table is empty at
