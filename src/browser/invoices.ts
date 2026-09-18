@@ -31,11 +31,109 @@ export interface DownloadedInvoice extends InvoiceInfo {
   files: DownloadedPdf[];
 }
 
+export interface InvoicePageSignals {
+  url: string;
+  httpStatus: number | null;
+  title: string;
+  bodyTextSample: string;
+  hasPasswordField: boolean;
+}
+
+function hostnameOf(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return "";
+  }
+}
+
+function looksLikeLoginPage(signals: InvoicePageSignals): boolean {
+  const host = hostnameOf(signals.url);
+  if (host === "authenticator.cursor.sh" || host.startsWith("authenticator.")) return true;
+  if (/\/(login|sign-?in|auth)(\/|$|\?)/i.test(signals.url)) return true;
+  if (/[?&]authorization_session_id=/i.test(signals.url)) return true;
+  return signals.hasPasswordField;
+}
+
+function looksLikeCloudflareChallenge(signals: InvoicePageSignals): boolean {
+  const haystack = `${signals.title}\n${signals.bodyTextSample}`;
+  return (
+    /just a moment/i.test(signals.title) ||
+    /performing security verification/i.test(haystack) ||
+    /verify you are not a bot/i.test(haystack) ||
+    (/ray id/i.test(haystack) && /cloudflare/i.test(haystack))
+  );
+}
+
+/**
+ * Builds a loud, actionable error when the billing page never actually
+ * loaded — expired Cursor session, WorkOS authenticator redirect, or a
+ * Cloudflare bot challenge. Returns null when the page looks like the
+ * real invoice source (or an empty-but-otherwise-normal billing page).
+ */
+export function invoicePageBlockError(signals: InvoicePageSignals): Error | null {
+  const login = looksLikeLoginPage(signals);
+  const cloudflare = looksLikeCloudflareChallenge(signals);
+  if (!login && !cloudflare) return null;
+
+  const status = signals.httpStatus != null ? `HTTP ${signals.httpStatus}` : "no HTTP status";
+
+  if (login && cloudflare) {
+    return new Error(
+      `Session appears expired or blocked — redirected to Cursor's authenticator (${signals.url}) ` +
+        `and then hit a Cloudflare bot challenge (${status}). ` +
+        `Re-run "npm run bootstrap-login" to capture a fresh session. ` +
+        `If a fresh session still fails on Vercel, Cursor is blocking this headless runtime and the job needs a real Chrome (local cron, VPS, or hosted browser).`,
+    );
+  }
+
+  if (cloudflare) {
+    return new Error(
+      `Blocked by a Cloudflare bot challenge on ${signals.url} (${status}). ` +
+        `The Vercel headless browser cannot pass this check. ` +
+        `Re-run "npm run bootstrap-login" locally; if a fresh session still fails on Vercel, this job needs a real Chrome outside serverless.`,
+    );
+  }
+
+  return new Error(
+    `Session appears expired or invalid — landed on a login page (${signals.url}) instead of the invoice page. ` +
+      `Re-run "npm run bootstrap-login" to capture a fresh session.`,
+  );
+}
+
+export async function collectInvoicePageSignals(
+  page: Page,
+  httpStatus: number | null = null,
+): Promise<InvoicePageSignals> {
+  const [title, bodyTextSample, passwordCount] = await Promise.all([
+    page.title().catch(() => ""),
+    page
+      .locator("body")
+      .innerText()
+      .then((text) => text.slice(0, 2000))
+      .catch(() => ""),
+    page
+      .locator('input[type="password"]')
+      .count()
+      .catch(() => 0),
+  ]);
+
+  return {
+    url: page.url(),
+    httpStatus,
+    title,
+    bodyTextSample,
+    hasPasswordField: passwordCount > 0,
+  };
+}
+
 /**
  * Navigates to the configured invoice source URL and throws a clear,
- * actionable error if the session turns out to be invalid/expired (detected
- * via a redirect to a login-looking URL or the presence of a password
- * field), rather than failing confusingly deeper in the scrape step.
+ * actionable error if the session turns out to be invalid/expired or the
+ * headless browser is stuck on a Cloudflare challenge (Cursor's
+ * authenticator host, a login-looking URL, a password field, or the
+ * "Just a moment..." interstitial), rather than failing confusingly
+ * later as "no invoice rows matched".
  *
  * Returns the navigation's HTTP status (when available) so callers can
  * distinguish a normal 200 response that simply didn't render the expected
@@ -44,19 +142,12 @@ export interface DownloadedInvoice extends InvoiceInfo {
  */
 export async function navigateToInvoicePage(page: Page, config: Config): Promise<{ httpStatus: number | null }> {
   const response = await page.goto(config.INVOICE_SOURCE_URL, { waitUntil: "domcontentloaded" });
+  const httpStatus = response?.status() ?? null;
 
-  const looksLikeLogin =
-    /\/(login|sign-?in|auth)(\/|$|\?)/i.test(page.url()) ||
-    (await page.locator('input[type="password"]').count()) > 0;
+  const block = invoicePageBlockError(await collectInvoicePageSignals(page, httpStatus));
+  if (block) throw block;
 
-  if (looksLikeLogin) {
-    throw new Error(
-      `Session appears expired or invalid — landed on a login page (${page.url()}) instead of the invoice page. ` +
-        `Re-run "npm run bootstrap-login" to capture a fresh session.`,
-    );
-  }
-
-  return { httpStatus: response?.status() ?? null };
+  return { httpStatus };
 }
 
 /**

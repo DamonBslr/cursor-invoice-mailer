@@ -19,3 +19,4 @@ playwright/.cache/
 
 # Vercel
 .vercel
+.DS_Store

@@ -8,7 +8,13 @@ import { withRetry } from "./retry.js";
 import { loadSession } from "./session/store.js";
 import { launchBrowser } from "./browser/launch.js";
 import { applyStealth } from "./browser/stealth.js";
-import { navigateToInvoicePage, scrapeInvoices, downloadInvoice, type DownloadedInvoice } from "./browser/invoices.js";
+import {
+  navigateToInvoicePage,
+  scrapeInvoices,
+  downloadInvoice,
+  invoicePageBlockError,
+  type DownloadedInvoice,
+} from "./browser/invoices.js";
 import { loadLedger, hasBeenSent, recordSent, touchLedger } from "./ledger/store.js";
 import { createMailer } from "./mail/index.js";
 
@@ -90,9 +96,35 @@ export async function runJob(options: RunJobOptions = {}): Promise<JobResult> {
             bodyTextLength: bodyText.length,
             bodyTextSample: bodyText.slice(0, 2000),
             tableCount: doc?.querySelectorAll("table").length ?? 0,
+            hasPasswordField: (doc?.querySelectorAll('input[type="password"]').length ?? 0) > 0,
           };
         })
         .catch((err) => ({ evalError: err instanceof Error ? err.message : String(err) }));
+
+      const lateBlock =
+        "evalError" in diagnostics
+          ? null
+          : invoicePageBlockError({
+              url: page.url(),
+              httpStatus,
+              title: diagnostics.title,
+              bodyTextSample: diagnostics.bodyTextSample,
+              hasPasswordField: diagnostics.hasPasswordField,
+            });
+      if (lateBlock) {
+        logger.error(
+          {
+            url: page.url(),
+            httpStatus,
+            diagnostics,
+            consoleMessages: consoleMessages.slice(-20),
+            pageErrors: pageErrors.slice(-20),
+          },
+          "Invoice page was blocked after navigation (login or Cloudflare challenge)",
+        );
+        throw lateBlock;
+      }
+
       logger.warn(
         {
           url: page.url(),
