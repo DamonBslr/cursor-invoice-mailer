@@ -5,6 +5,27 @@ const boolFromString = z
   .optional()
   .transform((v) => v === "true" || v === "1");
 
+const emailAddress = z.string().email();
+
+/** Split a comma/semicolon-separated env value into unique email addresses. */
+function parseEmailList(value: string, name: string): string[] {
+  const emails = value
+    .split(/[,;]+/)
+    .map((e) => e.trim())
+    .filter(Boolean);
+
+  if (emails.length === 0) {
+    throw new Error(`${name} must contain at least one address`);
+  }
+
+  const invalid = emails.filter((e) => !emailAddress.safeParse(e).success);
+  if (invalid.length > 0) {
+    throw new Error(`${name} contains invalid address(es): ${invalid.join(", ")}`);
+  }
+
+  return [...new Set(emails)];
+}
+
 const envSchema = z.object({
   // Cursor login — only ever read by the local bootstrap script.
   CURSOR_LOGIN_EMAIL: z.string().email().optional(),
@@ -89,21 +110,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     throw new Error(`Invalid environment configuration:\n${issues}`);
   }
 
-  const recipients = parsed.data.RECIPIENT_EMAIL.split(",")
-    .map((e) => e.trim())
-    .filter(Boolean);
-
-  if (recipients.length === 0) {
-    throw new Error("RECIPIENT_EMAIL must contain at least one address");
-  }
-
-  const adminEmails = parsed.data.ADMIN_EMAIL.split(",")
-    .map((e) => e.trim())
-    .filter(Boolean);
-
-  if (adminEmails.length === 0) {
-    throw new Error("ADMIN_EMAIL must contain at least one address");
-  }
+  const recipients = parseEmailList(parsed.data.RECIPIENT_EMAIL, "RECIPIENT_EMAIL");
+  const adminEmails = parseEmailList(parsed.data.ADMIN_EMAIL, "ADMIN_EMAIL");
 
   if (parsed.data.MAIL_PROVIDER === "smtp") {
     if (!parsed.data.SMTP_HOST || !parsed.data.SMTP_PORT) {

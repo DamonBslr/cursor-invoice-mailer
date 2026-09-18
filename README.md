@@ -106,7 +106,8 @@ Fill in `.env`, in particular:
 
 - `CURSOR_LOGIN_EMAIL` / `CURSOR_LOGIN_PASSWORD` — used only by the local
   bootstrap script, never deployed.
-- `RECIPIENT_EMAIL`, `MAIL_PROVIDER` and the matching provider settings.
+- `RECIPIENT_EMAIL` (comma-separated for multiple addresses), `MAIL_PROVIDER`
+  and the matching provider settings.
 - `SESSION_ENCRYPTION_KEY` — generate one with:
 
   ```bash
