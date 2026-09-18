@@ -3,6 +3,7 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import type { BrowserContext, Page } from "playwright-core";
 import type { Config } from "../config.js";
+import { SessionAccessError } from "../errors.js";
 
 export interface InvoiceInfo {
   /** Stable-ish identifier used for ledger dedupe (hash of the view URL, or date+index fallback). */
@@ -71,7 +72,7 @@ function looksLikeCloudflareChallenge(signals: InvoicePageSignals): boolean {
  * Cloudflare bot challenge. Returns null when the page looks like the
  * real invoice source (or an empty-but-otherwise-normal billing page).
  */
-export function invoicePageBlockError(signals: InvoicePageSignals): Error | null {
+export function invoicePageBlockError(signals: InvoicePageSignals): SessionAccessError | null {
   const login = looksLikeLoginPage(signals);
   const cloudflare = looksLikeCloudflareChallenge(signals);
   if (!login && !cloudflare) return null;
@@ -79,7 +80,7 @@ export function invoicePageBlockError(signals: InvoicePageSignals): Error | null
   const status = signals.httpStatus != null ? `HTTP ${signals.httpStatus}` : "no HTTP status";
 
   if (login && cloudflare) {
-    return new Error(
+    return new SessionAccessError(
       `Session appears expired or blocked — redirected to Cursor's authenticator (${signals.url}) ` +
         `and then hit a Cloudflare bot challenge (${status}). ` +
         `Re-run "npm run bootstrap-login" to capture a fresh session. ` +
@@ -88,14 +89,14 @@ export function invoicePageBlockError(signals: InvoicePageSignals): Error | null
   }
 
   if (cloudflare) {
-    return new Error(
+    return new SessionAccessError(
       `Blocked by a Cloudflare bot challenge on ${signals.url} (${status}). ` +
         `The Vercel headless browser cannot pass this check. ` +
         `Re-run "npm run bootstrap-login" locally; if a fresh session still fails on Vercel, this job needs a real Chrome outside serverless.`,
     );
   }
 
-  return new Error(
+  return new SessionAccessError(
     `Session appears expired or invalid — landed on a login page (${signals.url}) instead of the invoice page. ` +
       `Re-run "npm run bootstrap-login" to capture a fresh session.`,
   );

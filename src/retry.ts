@@ -1,3 +1,4 @@
+import { SessionAccessError } from "./errors.js";
 import type { RunLogger } from "./logger.js";
 
 export interface RetryOptions {
@@ -36,6 +37,13 @@ export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions):
       lastError = err;
       const message = err instanceof Error ? err.message : String(err);
       logger.warn({ step: label, attempt, err: message }, `Step "${label}" failed on attempt ${attempt + 1}`);
+
+      // Session/login/Cloudflare blocks will not recover on retry — fail
+      // immediately so the admin alert is sent once, without burning the
+      // remaining attempts.
+      if (err instanceof SessionAccessError) {
+        throw err;
+      }
 
       if (attempt === retries) break;
 

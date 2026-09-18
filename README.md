@@ -185,7 +185,8 @@ using your configured `MAIL_PROVIDER`.
 | `INVOICE_PDF_LINK_SELECTOR` | Selector for the invoice PDF download control, evaluated on the hosted invoice page | `button:has-text("Download invoice"), a[href*="/pdf"], a[href$=".pdf"]` |
 | `RECEIPT_PDF_LINK_SELECTOR` | Selector for the receipt PDF download control, evaluated on the hosted invoice page | `button:has-text("Download receipt")` |
 | `INVOICE_COUNT` | How many latest invoices to check each run | `1` |
-| `RECIPIENT_EMAIL` | Destination address(es), comma-separated | — |
+| `RECIPIENT_EMAIL` | Destination address(es) for invoice/receipt PDFs, comma-separated | — |
+| `ADMIN_EMAIL` | Ops admin address(es) alerted when the Cursor session is missing, expired, or blocked — not the invoice recipient | `damon.basler@brandpfeil.de` |
 | `MAIL_PROVIDER` | `smtp` \| `resend` \| `sendgrid` | `smtp` |
 | `MAIL_FROM` | From address/name | — |
 | `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS` | SMTP settings | — |
@@ -217,10 +218,11 @@ using your configured `MAIL_PROVIDER`.
   request whose `Authorization` header doesn't match `Bearer $CRON_SECRET`,
   which Vercel sends automatically for cron-triggered invocations once
   `CRON_SECRET` is set as a project env var.
-- **Session expiry fails loudly.** If the stored session no longer works
-  (logged out, revoked, password changed), the job throws a clear error
-  instead of attempting an unattended login — check the Vercel function
-  logs and re-run `npm run bootstrap-login`.
+- **Session expiry fails loudly and emails the ops admin.** If the stored
+  session no longer works (logged out, revoked, password changed, or
+  blocked by Cloudflare), the job throws a clear error and emails
+  `ADMIN_EMAIL` (not `RECIPIENT_EMAIL`) so someone can re-run
+  `npm run bootstrap-login`. Check the Vercel function logs as well.
 
 ## Known limitations / things to verify for your account
 

@@ -15,7 +15,9 @@ import {
   invoicePageBlockError,
   type DownloadedInvoice,
 } from "./browser/invoices.js";
+import { SessionAccessError } from "./errors.js";
 import { loadLedger, hasBeenSent, recordSent, touchLedger } from "./ledger/store.js";
+import { notifyAdminOfSessionFailure } from "./mail/admin-alert.js";
 import { createMailer } from "./mail/index.js";
 
 export interface JobResult {
@@ -51,9 +53,11 @@ export async function runJob(options: RunJobOptions = {}): Promise<JobResult> {
   const sessionJson = await withRetry(() => loadSession(config), { ...retryDefaults, label: "loadSession" });
 
   if (!sessionJson) {
-    throw new Error(
+    const missing = new SessionAccessError(
       'No stored session found. Run "npm run bootstrap-login" once from a local machine to log in and capture a session before the scheduled job can run.',
     );
+    await notifyAdminOfSessionFailure({ config, logger, runId, dryRun, error: missing });
+    throw missing;
   }
 
   const storageState = JSON.parse(sessionJson);
@@ -237,6 +241,11 @@ export async function runJob(options: RunJobOptions = {}): Promise<JobResult> {
       skippedAlreadySent: alreadySent,
       message: `Emailed ${downloaded.length} invoice(s) with receipt(s) to ${config.recipients.join(", ")}.`,
     };
+  } catch (err) {
+    if (err instanceof SessionAccessError) {
+      await notifyAdminOfSessionFailure({ config, logger, runId, dryRun, error: err });
+    }
+    throw err;
   } finally {
     await browser.close().catch(() => undefined);
     await rm(tmpDir, { recursive: true, force: true }).catch(() => undefined);

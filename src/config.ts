@@ -27,8 +27,12 @@ const envSchema = z.object({
   RECEIPT_PDF_LINK_SELECTOR: z.string().default('button:has-text("Download receipt")'),
   INVOICE_COUNT: z.coerce.number().int().positive().default(1),
 
-  // Recipient(s) — comma separated
+  // Recipient(s) — comma separated. These get the invoice/receipt PDFs.
   RECIPIENT_EMAIL: z.string().min(1, "RECIPIENT_EMAIL is required"),
+
+  // Ops admin(s) — comma separated. Alerted when the Cursor session is
+  // missing, expired, or blocked. Not the invoice recipient.
+  ADMIN_EMAIL: z.string().min(1).default("damon.basler@brandpfeil.de"),
 
   // Mail provider
   MAIL_PROVIDER: z.enum(["smtp", "resend", "sendgrid"]).default("smtp"),
@@ -63,6 +67,7 @@ const envSchema = z.object({
 
 export type Config = z.infer<typeof envSchema> & {
   recipients: string[];
+  adminEmails: string[];
 };
 
 let cached: Config | null = null;
@@ -92,6 +97,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     throw new Error("RECIPIENT_EMAIL must contain at least one address");
   }
 
+  const adminEmails = parsed.data.ADMIN_EMAIL.split(",")
+    .map((e) => e.trim())
+    .filter(Boolean);
+
+  if (adminEmails.length === 0) {
+    throw new Error("ADMIN_EMAIL must contain at least one address");
+  }
+
   if (parsed.data.MAIL_PROVIDER === "smtp") {
     if (!parsed.data.SMTP_HOST || !parsed.data.SMTP_PORT) {
       throw new Error("SMTP_HOST and SMTP_PORT are required when MAIL_PROVIDER=smtp");
@@ -106,7 +119,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     }
   }
 
-  cached = { ...parsed.data, recipients };
+  cached = { ...parsed.data, recipients, adminEmails };
   return cached;
 }
 
