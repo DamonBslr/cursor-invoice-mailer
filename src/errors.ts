@@ -12,3 +12,17 @@ export class SessionAccessError extends Error {
     this.name = "SessionAccessError";
   }
 }
+
+/**
+ * Thrown when the billing page shell loaded (logged in, invoice table
+ * headers visible) but no invoice rows or Stripe invoice links appeared.
+ * That is a failed data fetch or selector mismatch — not an empty account.
+ */
+export class InvoiceScrapeError extends Error {
+  readonly name = "InvoiceScrapeError";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "InvoiceScrapeError";
+  }
+}

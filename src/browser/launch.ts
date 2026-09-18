@@ -1,6 +1,30 @@
 import { dirname } from "node:path";
 import type { Browser } from "playwright-core";
 
+const UNSAFE_ORIGIN_FLAGS = new Set([
+  "--disable-web-security",
+  "--disable-site-isolation-trials",
+  "--allow-running-insecure-content",
+]);
+
+const UNSAFE_DISABLED_FEATURES = new Set(["IsolateOrigins", "site-per-process"]);
+
+/** Drops Chromium flags that break Cursor's same-origin billing API. */
+export function sanitizeChromiumArgs(args: string[]): string[] {
+  return args
+    .filter((arg) => !UNSAFE_ORIGIN_FLAGS.has(arg))
+    .map((arg) => {
+      if (!arg.startsWith("--disable-features=")) return arg;
+      const features = arg
+        .slice("--disable-features=".length)
+        .split(",")
+        .map((feature) => feature.trim())
+        .filter((feature) => feature && !UNSAFE_DISABLED_FEATURES.has(feature));
+      return features.length > 0 ? `--disable-features=${features.join(",")}` : "";
+    })
+    .filter(Boolean);
+}
+
 /**
  * Launches a Chromium instance appropriate for the current environment:
  *  - On Vercel (serverless): playwright-core + @sparticuz/chromium, a
@@ -35,19 +59,14 @@ export async function launchBrowser(options: { headless?: boolean } = {}): Promi
       : executableDir;
 
     // @sparticuz/chromium's default args disable the Same-Origin Policy
-    // (intended for cross-origin scraping/testing use cases), but Cursor's
-    // billing page relies on a correct Origin header for its own CSRF/origin
-    // check on the data-fetching requests that populate the invoice table —
-    // with these flags present, that check rejects the requests with
-    // `{"error":"Invalid origin for state-changing request"}` (400/403s),
-    // and the page renders without any invoices. We don't need cross-origin
-    // security disabled for same-origin navigation + clicking, so strip them.
-    const unsafeOriginFlags = new Set([
-      "--disable-web-security",
-      "--disable-site-isolation-trials",
-      "--allow-running-insecure-content",
-    ]);
-    const args = chromiumBinary.default.args.filter((arg) => !unsafeOriginFlags.has(arg));
+    // and site isolation (intended for cross-origin scraping/testing).
+    // Cursor's billing page relies on a correct Origin header for CSRF
+    // checks on the requests that populate the invoice table — with those
+    // flags present, the API returns
+    // `{"error":"Invalid origin for state-changing request"}` and the page
+    // renders the Invoices header with empty rows. Strip the exact flags
+    // and the matching --disable-features values.
+    const args = sanitizeChromiumArgs(chromiumBinary.default.args);
 
     return chromium.launch({
       args,

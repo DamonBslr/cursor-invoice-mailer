@@ -3,7 +3,10 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import type { BrowserContext, Page } from "playwright-core";
 import type { Config } from "../config.js";
-import { SessionAccessError } from "../errors.js";
+import { InvoiceScrapeError, SessionAccessError } from "../errors.js";
+
+const STRIPE_INVOICE_LINK_SELECTOR = 'a[href*="invoice.stripe.com"], a[href*="invoicedata.stripe.com"]';
+const INVOICE_DATA_WAIT_MS = 45_000;
 
 export interface InvoiceInfo {
   /** Stable-ish identifier used for ledger dedupe (hash of the view URL, or date+index fallback). */
@@ -38,6 +41,24 @@ export interface InvoicePageSignals {
   title: string;
   bodyTextSample: string;
   hasPasswordField: boolean;
+}
+
+export interface BillingTableSummary {
+  headerText: string;
+  rowCount: number;
+  stripeLinkCount: number;
+}
+
+export interface BillingPageDiagnostics {
+  title: string;
+  bodyTextLength: number;
+  bodyTextSample: string;
+  tableCount: number;
+  hasPasswordField: boolean;
+  hasInvoicesHeading: boolean;
+  hasInvoiceColumnHeader: boolean;
+  stripeLinkCount: number;
+  tables: BillingTableSummary[];
 }
 
 function hostnameOf(url: string): string {
@@ -148,29 +169,66 @@ export async function navigateToInvoicePage(page: Page, config: Config): Promise
   const block = invoicePageBlockError(await collectInvoicePageSignals(page, httpStatus));
   if (block) throw block;
 
+  // Give the client-rendered billing fetch a chance to start. networkidle
+  // often never arrives on this dashboard (long-lived connections), so the
+  // timeout is expected and not treated as a failure.
+  await page.waitForLoadState("networkidle", { timeout: 15_000 }).catch(() => undefined);
+
+  const lateBlock = invoicePageBlockError(await collectInvoicePageSignals(page, httpStatus));
+  if (lateBlock) throw lateBlock;
+
   return { httpStatus };
 }
 
-/**
- * Scrapes the invoice table using the configurable selectors, returning
- * every matching row in DOM order (`INVOICE_COUNT` 0 = unlimited; N > 0
- * caps at the N newest). Cursor's billing page lists invoices newest-first
- * (confirmed against the real markup: a `<table>` with one `<tr>` per
- * invoice, date in the first `<td>`, and a "View" link — the Stripe Hosted
- * Invoice Page — in the last `<td>`).
- *
- * The dashboard is client-rendered: the table is empty at `domcontentloaded`
- * and only populates once the page hydrates and its billing data fetch
- * resolves. We wait for at least one matching row to appear (bounded, so a
- * genuinely selector mismatch or empty account still resolves) rather than
- * scraping immediately.
- */
-export async function scrapeInvoices(page: Page, config: Config): Promise<InvoiceInfo[]> {
+export function looksLikeBillingShell(diagnostics: BillingPageDiagnostics): boolean {
+  return diagnostics.hasInvoicesHeading || diagnostics.hasInvoiceColumnHeader;
+}
+
+export async function collectBillingDiagnostics(page: Page): Promise<BillingPageDiagnostics> {
+  return page.evaluate(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- `document` isn't declared in this project's (deliberately DOM-less) tsconfig lib; this callback runs in the browser, not Node.
+    const doc = (globalThis as any).document;
+    const bodyText: string = doc?.body?.innerText ?? "";
+    const tables = Array.from(doc?.querySelectorAll("table") ?? []).map((tableNode) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- browser DOM node in a Node tsconfig.
+      const table = tableNode as any;
+      const headerText = Array.from(table.querySelectorAll("th"))
+        .map((th) => String((th as { innerText?: string }).innerText ?? "").trim())
+        .filter(Boolean)
+        .join(" | ");
+      return {
+        headerText,
+        rowCount: table.querySelectorAll("tbody tr").length,
+        stripeLinkCount: table.querySelectorAll(
+          'a[href*="invoice.stripe.com"], a[href*="invoicedata.stripe.com"]',
+        ).length,
+      };
+    });
+
+    return {
+      title: doc?.title ?? "",
+      bodyTextLength: bodyText.length,
+      bodyTextSample: bodyText.slice(0, 2000),
+      tableCount: tables.length,
+      hasPasswordField: (doc?.querySelectorAll('input[type="password"]').length ?? 0) > 0,
+      hasInvoicesHeading: /(?:^|\n)Invoices(?:\n|$)/.test(bodyText),
+      hasInvoiceColumnHeader: tables.some((table) => /invoice/i.test(table.headerText) && /date/i.test(table.headerText)),
+      stripeLinkCount:
+        doc?.querySelectorAll('a[href*="invoice.stripe.com"], a[href*="invoicedata.stripe.com"]').length ?? 0,
+      tables,
+    };
+  });
+}
+
+function invoiceIdFrom(viewUrl: string | null, dateText: string, index: number): string {
+  const idSource = viewUrl ?? `${dateText}-${index}`;
+  return createHash("sha256").update(idSource).digest("hex").slice(0, 16);
+}
+
+async function scrapeConfiguredRows(page: Page, config: Config): Promise<InvoiceInfo[]> {
   const rows = page.locator(config.INVOICE_ROW_SELECTOR);
-  await rows.first().waitFor({ state: "attached", timeout: 20_000 }).catch(() => undefined);
   const count = await rows.count();
   const limit = config.INVOICE_COUNT > 0 ? config.INVOICE_COUNT : Number.POSITIVE_INFINITY;
-
   const invoices: InvoiceInfo[] = [];
 
   for (let i = 0; i < count && invoices.length < limit; i++) {
@@ -190,14 +248,102 @@ export async function scrapeInvoices(page: Page, config: Config): Promise<Invoic
     }
 
     if (!dateText && !viewUrl) {
-      // Nothing usable on this row — likely a header row or selector mismatch.
+      // Empty placeholder / header row — the billing shell often renders
+      // these before the invoice data fetch completes.
       continue;
     }
 
-    const idSource = viewUrl ?? `${dateText}-${i}`;
-    const id = createHash("sha256").update(idSource).digest("hex").slice(0, 16);
+    invoices.push({
+      id: invoiceIdFrom(viewUrl, dateText, i),
+      dateText: dateText || `row-${i}`,
+      viewUrl,
+      rowIndex: i,
+    });
+  }
 
-    invoices.push({ id, dateText: dateText || `row-${i}`, viewUrl, rowIndex: i });
+  return invoices;
+}
+
+/**
+ * Fallback when the table markup no longer matches INVOICE_ROW_SELECTOR:
+ * collect every Stripe hosted-invoice link on the page.
+ */
+async function scrapeStripeInvoiceLinks(page: Page, config: Config): Promise<InvoiceInfo[]> {
+  const links = page.locator(STRIPE_INVOICE_LINK_SELECTOR);
+  const count = await links.count();
+  const limit = config.INVOICE_COUNT > 0 ? config.INVOICE_COUNT : Number.POSITIVE_INFINITY;
+  const invoices: InvoiceInfo[] = [];
+  const seen = new Set<string>();
+
+  for (let i = 0; i < count && invoices.length < limit; i++) {
+    const href = await links.nth(i).getAttribute("href").catch(() => null);
+    if (!href) continue;
+
+    const viewUrl = new URL(href, page.url()).toString();
+    if (seen.has(viewUrl)) continue;
+    seen.add(viewUrl);
+
+    const dateText = (
+      await links
+        .nth(i)
+        .evaluate((el) => {
+          const node = el as {
+            closest?: (selector: string) => { querySelector?: (selector: string) => { textContent?: string } | null } | null;
+            textContent?: string;
+          };
+          const row = node.closest?.("tr, [role='row']");
+          const firstCell = row?.querySelector?.("td, [role='cell']");
+          return (firstCell?.textContent || node.textContent || "").trim();
+        })
+        .catch(() => "")
+    ).trim();
+
+    invoices.push({
+      id: invoiceIdFrom(viewUrl, dateText, i),
+      dateText: dateText || `stripe-${i}`,
+      viewUrl,
+      rowIndex: i,
+    });
+  }
+
+  return invoices;
+}
+
+/**
+ * Scrapes the invoice table using the configurable selectors, returning
+ * every matching row in DOM order (`INVOICE_COUNT` 0 = unlimited; N > 0
+ * caps at the N newest). Falls back to Stripe hosted-invoice links if the
+ * table rows are empty placeholders or the markup no longer matches.
+ *
+ * The dashboard is client-rendered: the table often has empty `<tr>`s at
+ * `domcontentloaded`. Waiting for any row is not enough — we wait for a
+ * real Stripe invoice link (or give up after {@link INVOICE_DATA_WAIT_MS}).
+ * If the Invoices heading / column headers are visible but nothing usable
+ * appears, this throws {@link InvoiceScrapeError} instead of returning [].
+ */
+export async function scrapeInvoices(page: Page, config: Config): Promise<InvoiceInfo[]> {
+  const populated = page.locator(
+    [
+      `${config.INVOICE_ROW_SELECTOR} a[href*="invoice.stripe.com"]`,
+      `${config.INVOICE_ROW_SELECTOR} a[href*="invoicedata.stripe.com"]`,
+      STRIPE_INVOICE_LINK_SELECTOR,
+    ].join(", "),
+  );
+  await populated.first().waitFor({ state: "attached", timeout: INVOICE_DATA_WAIT_MS }).catch(() => undefined);
+
+  const fromRows = await scrapeConfiguredRows(page, config);
+  const invoices = fromRows.length > 0 ? fromRows : await scrapeStripeInvoiceLinks(page, config);
+
+  if (invoices.length === 0) {
+    const diagnostics = await collectBillingDiagnostics(page);
+    if (looksLikeBillingShell(diagnostics)) {
+      throw new InvoiceScrapeError(
+        `Billing page loaded but no invoice rows or Stripe invoice links appeared after ${INVOICE_DATA_WAIT_MS / 1000}s. ` +
+          `The Invoices table chrome was visible (headers=${JSON.stringify(diagnostics.tables)}), ` +
+          `so this is a failed billing-data fetch or selector mismatch, not an empty account. ` +
+          `Check function logs for failed cursor.com API responses.`,
+      );
+    }
   }
 
   return invoices;

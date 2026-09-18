@@ -1,4 +1,4 @@
-import { SessionAccessError } from "./errors.js";
+import { InvoiceScrapeError, SessionAccessError } from "./errors.js";
 import type { RunLogger } from "./logger.js";
 
 export interface RetryOptions {
@@ -38,10 +38,10 @@ export async function withRetry<T>(fn: () => Promise<T>, options: RetryOptions):
       const message = err instanceof Error ? err.message : String(err);
       logger.warn({ step: label, attempt, err: message }, `Step "${label}" failed on attempt ${attempt + 1}`);
 
-      // Session/login/Cloudflare blocks will not recover on retry — fail
-      // immediately so the admin alert is sent once, without burning the
-      // remaining attempts.
-      if (err instanceof SessionAccessError) {
+      // Session blocks and "headers but no invoice data" will not recover
+      // on retry — fail immediately so the admin alert is sent once,
+      // without burning the remaining attempts (and the function timeout).
+      if (err instanceof SessionAccessError || err instanceof InvoiceScrapeError) {
         throw err;
       }
 

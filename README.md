@@ -185,9 +185,9 @@ emailing) using your configured `MAIL_PROVIDER`.
 | Variable | Purpose | Default |
 |---|---|---|
 | `INVOICE_SOURCE_URL` | Billing/invoice page to scrape | `https://cursor.com/dashboard/billing` |
-| `INVOICE_ROW_SELECTOR` | CSS selector matching each invoice row | `table:has(th:has-text("Invoice")) tbody tr` |
-| `INVOICE_DATE_SELECTOR` | Selector (scoped to a row) for the invoice date | `[data-testid="invoice-date"], td:nth-child(1)` |
-| `INVOICE_DOWNLOAD_SELECTOR` | Selector (scoped to a row) for the "View" link (Stripe Hosted Invoice Page) | `td:last-child a[href]` |
+| `INVOICE_ROW_SELECTOR` | CSS selector matching each invoice row | `table:has(th:has-text("Invoice")) tbody tr, table:has(th:has-text("Date (UTC)")) tbody tr` |
+| `INVOICE_DATE_SELECTOR` | Selector (scoped to a row) for the invoice date | `td:nth-child(1)` |
+| `INVOICE_DOWNLOAD_SELECTOR` | Selector (scoped to a row) for the "View" link (Stripe Hosted Invoice Page) | `td:last-child a[href], a[href*="invoice.stripe.com"]` |
 | `INVOICE_PDF_LINK_SELECTOR` | Selector for the invoice PDF download control, evaluated on the hosted invoice page | `button:has-text("Download invoice"), a[href*="/pdf"], a[href$=".pdf"]` |
 | `RECEIPT_PDF_LINK_SELECTOR` | Selector for the receipt PDF download control, evaluated on the hosted invoice page | `button:has-text("Download receipt")` |
 | `INVOICE_COUNT` | How many latest invoices to check each run. `0` = every visible row; `N > 0` caps at the N newest | `0` |
@@ -224,11 +224,12 @@ emailing) using your configured `MAIL_PROVIDER`.
   request whose `Authorization` header doesn't match `Bearer $CRON_SECRET`,
   which Vercel sends automatically for cron-triggered invocations once
   `CRON_SECRET` is set as a project env var.
-- **Session expiry fails loudly and emails the ops admin.** If the stored
-  session no longer works (logged out, revoked, password changed, or
-  blocked by Cloudflare), the job throws a clear error and emails
-  `ADMIN_EMAIL` (not `RECIPIENT_EMAIL`) so someone can re-run
-  `npm run bootstrap-login`. Check the Vercel function logs as well.
+- **Session expiry and empty invoice tables fail loudly and email the ops admin.**
+  If the stored session no longer works (logged out, revoked, password
+  changed, or blocked by Cloudflare), or if the billing page loads with
+  Invoices headers but no rows, the job throws a clear error and emails
+  `ADMIN_EMAIL` (not `RECIPIENT_EMAIL`). Check the Vercel function logs as
+  well; a headers-but-no-rows result is not treated as a successful empty run.
 
 ## Known limitations / things to verify for your account
 
@@ -245,11 +246,12 @@ emailing) using your configured `MAIL_PROVIDER`.
   target `<button>`s by text rather than `<a href>`. Run
   `npm run run-once -- --dry-run` after bootstrapping and adjust selectors
   if your account's page differs.
-- The billing dashboard is client-rendered: the invoice table is empty at
-  `domcontentloaded` and only populates after the page hydrates and its data
-  fetch resolves. `scrapeInvoices` (`src/browser/invoices.ts`) waits (up to
-  20s) for a matching row to appear before counting rows, rather than
-  scraping immediately after navigation.
+- The billing dashboard is client-rendered: the invoice table often has
+  empty placeholder rows at `domcontentloaded`. `scrapeInvoices`
+  (`src/browser/invoices.ts`) waits up to 45s for a real Stripe invoice
+  link, then falls back to collecting `invoice.stripe.com` links on the
+  page. If the Invoices heading / column headers are visible but no usable
+  rows appear, the job errors instead of reporting a successful empty run.
 - Vercel Cron's minimum interval is daily; send-once delivery is achieved
   by the ledger (one email per invoice id), not by the schedule itself.
   The first run after upgrading seeds every currently visible invoice as

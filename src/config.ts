@@ -36,9 +36,11 @@ const envSchema = z.object({
   // Hosted Invoice Page — see src/browser/invoices.ts for why that's a
   // separate hop from the actual PDF).
   INVOICE_SOURCE_URL: z.string().url().default("https://cursor.com/dashboard/billing"),
-  INVOICE_ROW_SELECTOR: z.string().default('table:has(th:has-text("Invoice")) tbody tr'),
+  INVOICE_ROW_SELECTOR: z
+    .string()
+    .default('table:has(th:has-text("Invoice")) tbody tr, table:has(th:has-text("Date (UTC)")) tbody tr'),
   INVOICE_DATE_SELECTOR: z.string().default("td:nth-child(1)"),
-  INVOICE_DOWNLOAD_SELECTOR: z.string().default("td:last-child a[href]"),
+  INVOICE_DOWNLOAD_SELECTOR: z.string().default('td:last-child a[href], a[href*="invoice.stripe.com"]'),
   // Selectors for the actual PDF download controls, evaluated on the Stripe
   // Hosted Invoice Page (not on the billing table row). That page exposes
   // separate "Download invoice" and "Download receipt" buttons.

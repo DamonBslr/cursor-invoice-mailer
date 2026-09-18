@@ -13,8 +13,11 @@ import {
   scrapeInvoices,
   downloadInvoice,
   invoicePageBlockError,
+  collectBillingDiagnostics,
+  looksLikeBillingShell,
+  type InvoiceInfo,
 } from "./browser/invoices.js";
-import { SessionAccessError } from "./errors.js";
+import { InvoiceScrapeError, SessionAccessError } from "./errors.js";
 import { loadLedger, hasBeenSent, needsSeedMigration, recordSent, seedExistingInvoices, touchLedger } from "./ledger/store.js";
 import { notifyAdminOfSessionFailure } from "./mail/admin-alert.js";
 import { createMailer } from "./mail/index.js";
@@ -73,36 +76,51 @@ export async function runJob(options: RunJobOptions = {}): Promise<JobResult> {
     // usually the fastest way to find out why.
     const consoleMessages: string[] = [];
     const pageErrors: string[] = [];
+    const failedApi: string[] = [];
     page.on("console", (msg) => consoleMessages.push(`[${msg.type()}] ${msg.text()}`));
     page.on("pageerror", (err) => pageErrors.push(err.message));
+    page.on("response", (res) => {
+      const status = res.status();
+      if (status < 400) return;
+      try {
+        const url = new URL(res.url());
+        if (!/(^|\.)(cursor\.com|stripe\.com)$/i.test(url.hostname)) return;
+        failedApi.push(`${status} ${url.origin}${url.pathname}`);
+      } catch {
+        failedApi.push(`${status} ${res.url()}`);
+      }
+    });
 
     const { httpStatus } = await withRetry(() => navigateToInvoicePage(page, config), {
       ...retryDefaults,
       label: "navigateToInvoicePage",
     });
-    const invoices = await withRetry(() => scrapeInvoices(page, config), { ...retryDefaults, label: "scrapeInvoices" });
+
+    let invoices: InvoiceInfo[];
+    try {
+      invoices = await withRetry(() => scrapeInvoices(page, config), { ...retryDefaults, label: "scrapeInvoices" });
+    } catch (err) {
+      if (err instanceof InvoiceScrapeError) {
+        logger.error(
+          {
+            url: page.url(),
+            httpStatus,
+            failedApi: failedApi.slice(0, 30),
+            consoleMessages: consoleMessages.slice(-20),
+            pageErrors: pageErrors.slice(-20),
+          },
+          "Billing page loaded without invoice data",
+        );
+      }
+      throw err;
+    }
 
     logger.info({ found: invoices.length }, "Scraped invoice rows");
 
     if (invoices.length === 0) {
-      // Distinguish "genuinely no invoices" from "page didn't render what we
-      // expected" — this environment runs a more easily fingerprinted
-      // headless build than local dev/bootstrap, so a valid session can
-      // still land on a page that renders without the invoice data.
-      const diagnostics = await page
-        .evaluate(() => {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any -- `document` isn't declared in this project's (deliberately DOM-less) tsconfig lib; this callback runs in the browser, not Node.
-          const doc = (globalThis as any).document;
-          const bodyText: string = doc?.body?.innerText ?? "";
-          return {
-            title: doc?.title ?? "",
-            bodyTextLength: bodyText.length,
-            bodyTextSample: bodyText.slice(0, 2000),
-            tableCount: doc?.querySelectorAll("table").length ?? 0,
-            hasPasswordField: (doc?.querySelectorAll('input[type="password"]').length ?? 0) > 0,
-          };
-        })
-        .catch((err) => ({ evalError: err instanceof Error ? err.message : String(err) }));
+      const diagnostics = await collectBillingDiagnostics(page).catch((err) => ({
+        evalError: err instanceof Error ? err.message : String(err),
+      }));
 
       const lateBlock =
         "evalError" in diagnostics
@@ -120,6 +138,7 @@ export async function runJob(options: RunJobOptions = {}): Promise<JobResult> {
             url: page.url(),
             httpStatus,
             diagnostics,
+            failedApi: failedApi.slice(0, 30),
             consoleMessages: consoleMessages.slice(-20),
             pageErrors: pageErrors.slice(-20),
           },
@@ -128,11 +147,18 @@ export async function runJob(options: RunJobOptions = {}): Promise<JobResult> {
         throw lateBlock;
       }
 
+      if (!("evalError" in diagnostics) && looksLikeBillingShell(diagnostics)) {
+        throw new InvoiceScrapeError(
+          `Billing page loaded but scrape returned 0 invoices. Diagnostics: ${JSON.stringify(diagnostics.tables)}.`,
+        );
+      }
+
       logger.warn(
         {
           url: page.url(),
           httpStatus,
           diagnostics,
+          failedApi: failedApi.slice(0, 30),
           consoleMessages: consoleMessages.slice(-20),
           pageErrors: pageErrors.slice(-20),
         },
@@ -255,7 +281,7 @@ export async function runJob(options: RunJobOptions = {}): Promise<JobResult> {
         : `Emailed ${sentIds.length} invoice(s) with receipt(s) to ${config.recipients.join(", ")}.`,
     };
   } catch (err) {
-    if (err instanceof SessionAccessError) {
+    if (err instanceof SessionAccessError || err instanceof InvoiceScrapeError) {
       await notifyAdminOfSessionFailure({ config, logger, runId, dryRun, error: err });
     }
     throw err;
