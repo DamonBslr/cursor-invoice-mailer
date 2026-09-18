@@ -152,11 +152,12 @@ export async function navigateToInvoicePage(page: Page, config: Config): Promise
 }
 
 /**
- * Scrapes the invoice table using the configurable selectors, returning up
- * to `config.INVOICE_COUNT` most recent rows in DOM order. Cursor's billing
- * page lists invoices newest-first (confirmed against the real markup: a
- * `<table>` with one `<tr>` per invoice, date in the first `<td>`, and a
- * "View" link — the Stripe Hosted Invoice Page — in the last `<td>`).
+ * Scrapes the invoice table using the configurable selectors, returning
+ * every matching row in DOM order (`INVOICE_COUNT` 0 = unlimited; N > 0
+ * caps at the N newest). Cursor's billing page lists invoices newest-first
+ * (confirmed against the real markup: a `<table>` with one `<tr>` per
+ * invoice, date in the first `<td>`, and a "View" link — the Stripe Hosted
+ * Invoice Page — in the last `<td>`).
  *
  * The dashboard is client-rendered: the table is empty at `domcontentloaded`
  * and only populates once the page hydrates and its billing data fetch
@@ -168,10 +169,11 @@ export async function scrapeInvoices(page: Page, config: Config): Promise<Invoic
   const rows = page.locator(config.INVOICE_ROW_SELECTOR);
   await rows.first().waitFor({ state: "attached", timeout: 20_000 }).catch(() => undefined);
   const count = await rows.count();
+  const limit = config.INVOICE_COUNT > 0 ? config.INVOICE_COUNT : Number.POSITIVE_INFINITY;
 
   const invoices: InvoiceInfo[] = [];
 
-  for (let i = 0; i < count && invoices.length < config.INVOICE_COUNT; i++) {
+  for (let i = 0; i < count && invoices.length < limit; i++) {
     const row = rows.nth(i);
 
     const dateText = (await row.locator(config.INVOICE_DATE_SELECTOR).first().innerText().catch(() => "")).trim();

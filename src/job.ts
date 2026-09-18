@@ -13,10 +13,9 @@ import {
   scrapeInvoices,
   downloadInvoice,
   invoicePageBlockError,
-  type DownloadedInvoice,
 } from "./browser/invoices.js";
 import { SessionAccessError } from "./errors.js";
-import { loadLedger, hasBeenSent, recordSent, touchLedger } from "./ledger/store.js";
+import { loadLedger, hasBeenSent, needsSeedMigration, recordSent, seedExistingInvoices, touchLedger } from "./ledger/store.js";
 import { notifyAdminOfSessionFailure } from "./mail/admin-alert.js";
 import { createMailer } from "./mail/index.js";
 
@@ -35,10 +34,10 @@ export interface RunJobOptions {
 
 /**
  * The single orchestrator used by both the Vercel Cron route and the local
- * run-once script: load session -> launch browser -> navigate -> scrape ->
- * dedupe against the ledger -> download -> (dry-run short-circuit) -> email
- * -> record sent. Every network-ish step is wrapped in retry/backoff and
- * logged with a shared runId.
+ * run-once script: load session -> launch browser -> navigate -> scrape all
+ * rows -> one-time historical seed if needed -> dedupe against the ledger ->
+ * download + email + record each unsent invoice individually. Every
+ * network-ish step is wrapped in retry/backoff and logged with a shared runId.
  */
 export async function runJob(options: RunJobOptions = {}): Promise<JobResult> {
   const config = loadConfig();
@@ -151,6 +150,34 @@ export async function runJob(options: RunJobOptions = {}): Promise<JobResult> {
     }
 
     const ledger = await loadLedger(config);
+
+    if (needsSeedMigration(ledger)) {
+      const seedIds = invoices.map((inv) => inv.id);
+      if (dryRun) {
+        logger.info(
+          { wouldSeed: seedIds },
+          "DRY_RUN enabled — would seed existing invoices as already sent without emailing",
+        );
+        return {
+          runId,
+          dryRun,
+          sentInvoiceIds: [],
+          skippedAlreadySent: [],
+          message: `Dry run: would seed ${seedIds.length} existing invoice(s) as sent without emailing.`,
+        };
+      }
+
+      await seedExistingInvoices(ledger, seedIds, config);
+      logger.info({ seeded: seedIds }, "Seeded existing invoices as sent (ledger v2 migration) — no emails");
+      return {
+        runId,
+        dryRun,
+        sentInvoiceIds: [],
+        skippedAlreadySent: seedIds,
+        message: `Seeded ${seedIds.length} existing invoice(s) as already sent. Future runs will email only new invoices.`,
+      };
+    }
+
     const newInvoices = invoices.filter((inv) => !hasBeenSent(ledger, inv.id));
     const alreadySent = invoices.filter((inv) => hasBeenSent(ledger, inv.id)).map((inv) => inv.id);
 
@@ -166,80 +193,66 @@ export async function runJob(options: RunJobOptions = {}): Promise<JobResult> {
       };
     }
 
-    const downloaded: DownloadedInvoice[] = [];
+    const mailer = dryRun ? null : await createMailer(config);
+    let updatedLedger = ledger;
+    const sentIds: string[] = [];
+
     for (const invoice of newInvoices) {
-      const result = await withRetry(() => downloadInvoice(context, invoice, tmpDir, config), {
+      const downloaded = await withRetry(() => downloadInvoice(context, invoice, tmpDir, config), {
         ...retryDefaults,
         label: `downloadInvoice:${invoice.id}`,
       });
-      downloaded.push(result);
       logger.info(
-        { invoiceId: invoice.id, files: result.files.map((f) => f.fileName) },
+        { invoiceId: invoice.id, files: downloaded.files.map((f) => f.fileName) },
         "Downloaded invoice and receipt PDFs",
       );
-    }
 
-    const attachmentNames = downloaded.flatMap((d) => d.files.map((f) => f.fileName));
+      if (dryRun || !mailer) {
+        logger.info(
+          {
+            invoiceId: invoice.id,
+            dateText: downloaded.dateText,
+            wouldSendTo: config.recipients,
+            attachments: downloaded.files.map((f) => f.fileName),
+          },
+          "DRY_RUN enabled — would email this invoice",
+        );
+        continue;
+      }
 
-    if (dryRun) {
-      logger.info(
-        {
-          wouldSendTo: config.recipients,
-          attachments: attachmentNames,
-        },
-        "DRY_RUN enabled — skipping email send and ledger update",
-      );
-      return {
-        runId,
-        dryRun,
-        sentInvoiceIds: [],
-        skippedAlreadySent: alreadySent,
-        message: `Dry run: would have emailed ${downloaded.length} invoice(s) with receipt(s) to ${config.recipients.join(", ")}.`,
-      };
-    }
-
-    const mailer = await createMailer(config);
-    const attachments = await Promise.all(
-      downloaded.flatMap((d) =>
-        d.files.map(async (f) => ({
+      const attachments = await Promise.all(
+        downloaded.files.map(async (f) => ({
           filename: f.fileName,
           content: await readFile(f.filePath),
           contentType: "application/pdf",
         })),
-      ),
-    );
+      );
 
-    const dateTexts = downloaded.map((d) => d.dateText);
-    const subject =
-      dateTexts.length === 1
-        ? `Cursor Invoice & Receipt — ${dateTexts[0]}`
-        : `Cursor Invoices & Receipts — ${dateTexts.join(", ")}`;
+      await withRetry(
+        () =>
+          mailer.send({
+            to: config.recipients,
+            from: config.MAIL_FROM,
+            subject: `Cursor Invoice & Receipt — ${downloaded.dateText}`,
+            text: `Attached: invoice and receipt PDFs for Cursor billing period ${downloaded.dateText}.`,
+            attachments,
+          }),
+        { ...retryDefaults, label: `sendEmail:${invoice.id}` },
+      );
 
-    await withRetry(
-      () =>
-        mailer.send({
-          to: config.recipients,
-          from: config.MAIL_FROM,
-          subject,
-          text: `Attached: invoice and receipt PDFs for ${downloaded.length} Cursor billing period(s) (${downloaded.map((d) => d.dateText).join(", ")}).`,
-          attachments,
-        }),
-      { ...retryDefaults, label: "sendEmail" },
-    );
-
-    let updatedLedger = ledger;
-    for (const invoice of newInvoices) {
       updatedLedger = await recordSent(updatedLedger, invoice.id, config);
+      sentIds.push(invoice.id);
+      logger.info({ invoiceId: invoice.id, attachments: downloaded.files.map((f) => f.fileName) }, "Emailed invoice and updated ledger");
     }
-
-    logger.info({ sent: newInvoices.map((i) => i.id), attachments: attachmentNames }, "Emailed invoice(s) and receipt(s) and updated ledger");
 
     return {
       runId,
       dryRun,
-      sentInvoiceIds: newInvoices.map((i) => i.id),
+      sentInvoiceIds: sentIds,
       skippedAlreadySent: alreadySent,
-      message: `Emailed ${downloaded.length} invoice(s) with receipt(s) to ${config.recipients.join(", ")}.`,
+      message: dryRun
+        ? `Dry run: would have emailed ${newInvoices.length} invoice(s) with receipt(s) to ${config.recipients.join(", ")}.`
+        : `Emailed ${sentIds.length} invoice(s) with receipt(s) to ${config.recipients.join(", ")}.`,
     };
   } catch (err) {
     if (err instanceof SessionAccessError) {

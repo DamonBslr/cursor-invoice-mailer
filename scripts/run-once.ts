@@ -5,7 +5,7 @@
  * selectors and email delivery before relying on the schedule.
  *
  * Usage:
- *   npm run run-once                 # real run (sends email if a new invoice is found)
+ *   npm run run-once                 # real run (seeds historical invoices on first run; otherwise one email per new invoice)
  *   npm run run-once -- --dry-run    # scrapes + downloads but never sends or updates the ledger
  */
 import "dotenv/config";

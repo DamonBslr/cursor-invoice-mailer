@@ -46,7 +46,8 @@ const envSchema = z.object({
     .string()
     .default('button:has-text("Download invoice"), a[href*="/pdf"], a[href$=".pdf"]'),
   RECEIPT_PDF_LINK_SELECTOR: z.string().default('button:has-text("Download receipt")'),
-  INVOICE_COUNT: z.coerce.number().int().positive().default(1),
+  // 0 = scrape every visible row; N > 0 caps at the N newest.
+  INVOICE_COUNT: z.coerce.number().int().nonnegative().default(0),
 
   // Recipient(s) — comma separated. These get the invoice/receipt PDFs.
   RECIPIENT_EMAIL: z.string().min(1, "RECIPIENT_EMAIL is required"),

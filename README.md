@@ -8,10 +8,10 @@ TypeScript, deployed as a Vercel Cron job.
   locally, in a real browser (`npm run bootstrap-login`). The resulting
   session is encrypted and stored in Vercel Blob. The scheduled job reuses
   that session — it never re-types your password unattended.
-- **Daily cron, effectively monthly delivery.** Vercel Cron triggers the job
-  daily, but a small ledger (also in Vercel Blob) tracks which invoices have
-  already been emailed, so you only ever get a new email when a new invoice
-  actually appears.
+- **Daily cron, one email per new invoice.** Vercel Cron triggers the job
+  daily. A ledger (also in Vercel Blob) tracks every invoice already emailed,
+  so each invoice is sent exactly once. If two new invoices appear the same
+  day, you get two emails — and neither is sent again tomorrow.
 - **Configurable invoice source.** The billing page URL and the CSS
   selectors used to find invoice rows/dates/download links are all
   environment variables — no code changes needed if Cursor's page layout
@@ -39,12 +39,13 @@ api/cron/invoice-mailer.ts   (Vercel Cron, daily)
    1. load + decrypt session
    2. launch headless Chromium (playwright-core + @sparticuz/chromium)
    3. navigate to INVOICE_SOURCE_URL
-   4. scrape invoice rows (configurable selectors)
-   5. skip invoices already recorded in the ledger
-   6. download new invoice + receipt PDF(s)
-   7. DRY_RUN? → log what would be sent, stop here
-   8. email PDF(s) via SMTP / Resend / SendGrid
-   9. record sent invoice id(s) in the ledger
+   4. scrape all invoice rows (INVOICE_COUNT=0 means every visible row)
+   5. first run after this change: seed existing rows into the ledger (no email)
+   6. skip invoices already recorded in the ledger
+   7. for each new invoice: download invoice + receipt PDFs
+   8. DRY_RUN? → log what would be sent per invoice, stop here
+   9. email that invoice's PDFs (one email per invoice)
+  10. record that invoice id in the ledger immediately
 ```
 
 ## Stripe hosted invoices (important)
@@ -156,8 +157,9 @@ the ledger. Check the logged output:
 npm run run-once
 ```
 
-This will actually email the latest invoice (if not already in the ledger)
-using your configured `MAIL_PROVIDER`.
+This will actually send mail (or, on the first run after upgrading to
+per-invoice tracking, seed existing invoices as already sent without
+emailing) using your configured `MAIL_PROVIDER`.
 
 ### 6. Deploy to Vercel
 
@@ -172,8 +174,11 @@ using your configured `MAIL_PROVIDER`.
    { "crons": [{ "path": "/api/cron/invoice-mailer", "schedule": "0 9 * * *" }] }
    ```
 
-4. From now on, whenever a new invoice appears, the next daily run will
-   detect, download, and email it — and won't email it again.
+4. The **first** cron run after this change seeds every invoice currently
+   on the billing page as already sent (no historical email flood). From
+   then on, whenever a new invoice appears, the next daily run will
+   detect, download, and email **one mail per invoice** — and won't email
+   that invoice again.
 
 ## Configuration reference
 
@@ -185,7 +190,7 @@ using your configured `MAIL_PROVIDER`.
 | `INVOICE_DOWNLOAD_SELECTOR` | Selector (scoped to a row) for the "View" link (Stripe Hosted Invoice Page) | `td:last-child a[href]` |
 | `INVOICE_PDF_LINK_SELECTOR` | Selector for the invoice PDF download control, evaluated on the hosted invoice page | `button:has-text("Download invoice"), a[href*="/pdf"], a[href$=".pdf"]` |
 | `RECEIPT_PDF_LINK_SELECTOR` | Selector for the receipt PDF download control, evaluated on the hosted invoice page | `button:has-text("Download receipt")` |
-| `INVOICE_COUNT` | How many latest invoices to check each run | `1` |
+| `INVOICE_COUNT` | How many latest invoices to check each run. `0` = every visible row; `N > 0` caps at the N newest | `0` |
 | `RECIPIENT_EMAIL` | Destination address(es) for invoice/receipt PDFs, comma-separated | — |
 | `ADMIN_EMAIL` | Ops admin address(es) alerted when the Cursor session is missing, expired, or blocked — not the invoice recipient | `damon.basler@brandpfeil.de` |
 | `MAIL_PROVIDER` | `smtp` \| `resend` \| `sendgrid` | `smtp` |
@@ -245,8 +250,10 @@ using your configured `MAIL_PROVIDER`.
   fetch resolves. `scrapeInvoices` (`src/browser/invoices.ts`) waits (up to
   20s) for a matching row to appear before counting rows, rather than
   scraping immediately after navigation.
-- Vercel Cron's minimum interval is daily; true monthly-only delivery is
-  achieved by the ledger dedupe logic, not by the schedule itself.
+- Vercel Cron's minimum interval is daily; send-once delivery is achieved
+  by the ledger (one email per invoice id), not by the schedule itself.
+  The first run after upgrading seeds every currently visible invoice as
+  already sent so historical rows are not emailed.
 - Running a full Chromium browser in a serverless function can exceed the
   Vercel Hobby plan's default execution time limit. `vercel.json` requests
   `maxDuration: 120` for the cron function, which requires a Pro plan (or
@@ -258,7 +265,7 @@ using your configured `MAIL_PROVIDER`.
 | Command | Description |
 |---|---|
 | `npm run bootstrap-login` | One-time interactive login, captures + uploads encrypted session |
-| `npm run run-once` | Runs the full job locally once (sends email if a new invoice exists) |
+| `npm run run-once` | Runs the full job locally once (seeds historical invoices on first run; otherwise sends one email per new invoice) |
 | `npm run run-once -- --dry-run` | Same, but never sends email or updates the ledger |
 | `npm run typecheck` | TypeScript type checking |
 | `npm run lint` | ESLint |
