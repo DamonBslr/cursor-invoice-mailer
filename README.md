@@ -187,6 +187,8 @@ emailing) using your configured `MAIL_PROVIDER`.
 | `INVOICE_SOURCE_URL` | Billing/invoice page to scrape | `https://cursor.com/dashboard/billing` |
 | `INVOICE_ROW_SELECTOR` | CSS selector matching each invoice row | `table:has(th:has-text("Invoice")) tbody tr, table:has(th:has-text("Date (UTC)")) tbody tr` |
 | `INVOICE_DATE_SELECTOR` | Selector (scoped to a row) for the invoice date | `td:nth-child(1)` |
+| `INVOICE_DESCRIPTION_SELECTOR` | Selector (scoped to a row) for the description (used in the stable send-once fingerprint) | `td:nth-child(2)` |
+| `INVOICE_AMOUNT_SELECTOR` | Selector (scoped to a row) for the amount (used in the stable send-once fingerprint) | `td:nth-child(4)` |
 | `INVOICE_DOWNLOAD_SELECTOR` | Selector (scoped to a row) for the "View" link (Stripe Hosted Invoice Page) | `td:last-child a[href], a[href*="invoice.stripe.com"]` |
 | `INVOICE_PDF_LINK_SELECTOR` | Selector for the invoice PDF download control, evaluated on the hosted invoice page | `button:has-text("Download invoice"), a[href*="/pdf"], a[href$=".pdf"]` |
 | `RECEIPT_PDF_LINK_SELECTOR` | Selector for the receipt PDF download control, evaluated on the hosted invoice page | `button:has-text("Download receipt")` |
@@ -253,7 +255,9 @@ emailing) using your configured `MAIL_PROVIDER`.
   page. If the Invoices heading / column headers are visible but no usable
   rows appear, the job errors instead of reporting a successful empty run.
 - Vercel Cron's minimum interval is daily; send-once delivery is achieved
-  by the ledger (one email per invoice id), not by the schedule itself.
+  by the ledger (one email per invoice fingerprint: date + description +
+  amount), not by the schedule itself. Stripe "View" URLs rotate and are
+  not used as the identity.
   The first run after upgrading seeds every currently visible invoice as
   already sent so historical rows are not emailed.
 - Running a full Chromium browser in a serverless function can exceed the

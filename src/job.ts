@@ -115,7 +115,18 @@ export async function runJob(options: RunJobOptions = {}): Promise<JobResult> {
       throw err;
     }
 
-    logger.info({ found: invoices.length }, "Scraped invoice rows");
+    logger.info(
+      {
+        found: invoices.length,
+        invoices: invoices.map((inv) => ({
+          id: inv.id,
+          fingerprint: inv.fingerprint,
+          dateText: inv.dateText,
+          amountText: inv.amountText,
+        })),
+      },
+      "Scraped invoice rows",
+    );
 
     if (invoices.length === 0) {
       const diagnostics = await collectBillingDiagnostics(page).catch((err) => ({
@@ -181,7 +192,7 @@ export async function runJob(options: RunJobOptions = {}): Promise<JobResult> {
       const seedIds = invoices.map((inv) => inv.id);
       if (dryRun) {
         logger.info(
-          { wouldSeed: seedIds },
+          { wouldSeed: invoices.map((inv) => ({ id: inv.id, fingerprint: inv.fingerprint })) },
           "DRY_RUN enabled — would seed existing invoices as already sent without emailing",
         );
         return {
@@ -193,8 +204,11 @@ export async function runJob(options: RunJobOptions = {}): Promise<JobResult> {
         };
       }
 
-      await seedExistingInvoices(ledger, seedIds, config);
-      logger.info({ seeded: seedIds }, "Seeded existing invoices as sent (ledger v2 migration) — no emails");
+      await seedExistingInvoices(ledger, invoices, config);
+      logger.info(
+        { seeded: invoices.map((inv) => ({ id: inv.id, fingerprint: inv.fingerprint })) },
+        "Seeded existing invoices as sent (ledger v3 stable fingerprints) — no emails",
+      );
       return {
         runId,
         dryRun,
@@ -204,8 +218,8 @@ export async function runJob(options: RunJobOptions = {}): Promise<JobResult> {
       };
     }
 
-    const newInvoices = invoices.filter((inv) => !hasBeenSent(ledger, inv.id));
-    const alreadySent = invoices.filter((inv) => hasBeenSent(ledger, inv.id)).map((inv) => inv.id);
+    const newInvoices = invoices.filter((inv) => !hasBeenSent(ledger, inv.id, inv.fingerprint));
+    const alreadySent = invoices.filter((inv) => hasBeenSent(ledger, inv.id, inv.fingerprint)).map((inv) => inv.id);
 
     if (newInvoices.length === 0) {
       logger.info({ alreadySent }, "No new invoices since last run — nothing to send");
@@ -266,7 +280,7 @@ export async function runJob(options: RunJobOptions = {}): Promise<JobResult> {
         { ...retryDefaults, label: `sendEmail:${invoice.id}` },
       );
 
-      updatedLedger = await recordSent(updatedLedger, invoice.id, config);
+      updatedLedger = await recordSent(updatedLedger, invoice, config);
       sentIds.push(invoice.id);
       logger.info({ invoiceId: invoice.id, attachments: downloaded.files.map((f) => f.fileName) }, "Emailed invoice and updated ledger");
     }

@@ -1,21 +1,23 @@
 import type { Config } from "../config.js";
 import { readBlob, writeBlob } from "../blob.js";
 
-export const CURRENT_LEDGER_VERSION = 2;
+export const CURRENT_LEDGER_VERSION = 3;
 const LEDGER_MAX_IDS = 500;
 
 export interface Ledger {
   /** Invoice ids that have already been emailed (or seeded as historical), most recent last. */
   sentInvoiceIds: string[];
+  /** Stable date|description|amount keys — survives rotating Stripe view URLs. */
+  sentFingerprints: string[];
   lastRunAt: string | null;
   /**
-   * Schema version. Missing or below 2 means this ledger predates
-   * per-invoice send-once tracking and still needs the one-time historical seed.
+   * Schema version. Below 3 means this ledger still hashes Stripe view URLs
+   * (which rotate) and needs a re-seed with stable fingerprints.
    */
   ledgerVersion?: number;
 }
 
-const EMPTY_LEDGER: Ledger = { sentInvoiceIds: [], lastRunAt: null };
+const EMPTY_LEDGER: Ledger = { sentInvoiceIds: [], sentFingerprints: [], lastRunAt: null };
 
 /**
  * Loads the "already sent" ledger from Vercel Blob. This is what makes the
@@ -30,6 +32,7 @@ export async function loadLedger(config: Config): Promise<Ledger> {
     const parsed = JSON.parse(raw) as Partial<Ledger>;
     return {
       sentInvoiceIds: Array.isArray(parsed.sentInvoiceIds) ? parsed.sentInvoiceIds : [],
+      sentFingerprints: Array.isArray(parsed.sentFingerprints) ? parsed.sentFingerprints : [],
       lastRunAt: parsed.lastRunAt ?? null,
       ledgerVersion: typeof parsed.ledgerVersion === "number" ? parsed.ledgerVersion : undefined,
     };
@@ -40,8 +43,10 @@ export async function loadLedger(config: Config): Promise<Ledger> {
   }
 }
 
-export function hasBeenSent(ledger: Ledger, invoiceId: string): boolean {
-  return ledger.sentInvoiceIds.includes(invoiceId);
+export function hasBeenSent(ledger: Ledger, invoiceId: string, fingerprint?: string): boolean {
+  if (ledger.sentInvoiceIds.includes(invoiceId)) return true;
+  if (fingerprint && ledger.sentFingerprints.includes(fingerprint)) return true;
+  return false;
 }
 
 export function needsSeedMigration(ledger: Ledger): boolean {
@@ -64,13 +69,16 @@ async function persistLedger(ledger: Ledger, config: Config): Promise<void> {
  */
 export async function seedExistingInvoices(
   ledger: Ledger,
-  invoiceIds: string[],
+  invoices: Array<{ id: string; fingerprint: string }>,
   config: Config,
 ): Promise<Ledger> {
   if (!needsSeedMigration(ledger)) return ledger;
 
   const updated: Ledger = {
-    sentInvoiceIds: [...new Set([...ledger.sentInvoiceIds, ...invoiceIds])].slice(-LEDGER_MAX_IDS),
+    sentInvoiceIds: [...new Set([...ledger.sentInvoiceIds, ...invoices.map((inv) => inv.id)])].slice(-LEDGER_MAX_IDS),
+    sentFingerprints: [...new Set([...ledger.sentFingerprints, ...invoices.map((inv) => inv.fingerprint).filter(Boolean)])].slice(
+      -LEDGER_MAX_IDS,
+    ),
     lastRunAt: new Date().toISOString(),
     ledgerVersion: CURRENT_LEDGER_VERSION,
   };
@@ -82,9 +90,17 @@ export async function seedExistingInvoices(
  * Marks an invoice as sent and persists the updated ledger. Caps history at
  * the most recent 500 ids to keep the blob small indefinitely.
  */
-export async function recordSent(ledger: Ledger, invoiceId: string, config: Config): Promise<Ledger> {
+export async function recordSent(
+  ledger: Ledger,
+  invoice: { id: string; fingerprint?: string },
+  config: Config,
+): Promise<Ledger> {
+  const fingerprints = invoice.fingerprint
+    ? [...ledger.sentFingerprints, invoice.fingerprint]
+    : ledger.sentFingerprints;
   const updated: Ledger = {
-    sentInvoiceIds: [...ledger.sentInvoiceIds, invoiceId].slice(-LEDGER_MAX_IDS),
+    sentInvoiceIds: [...ledger.sentInvoiceIds, invoice.id].slice(-LEDGER_MAX_IDS),
+    sentFingerprints: [...new Set(fingerprints)].slice(-LEDGER_MAX_IDS),
     lastRunAt: new Date().toISOString(),
     ledgerVersion: ledger.ledgerVersion,
   };

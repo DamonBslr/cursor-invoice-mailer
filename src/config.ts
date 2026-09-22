@@ -40,6 +40,8 @@ const envSchema = z.object({
     .string()
     .default('table:has(th:has-text("Invoice")) tbody tr, table:has(th:has-text("Date (UTC)")) tbody tr'),
   INVOICE_DATE_SELECTOR: z.string().default("td:nth-child(1)"),
+  INVOICE_DESCRIPTION_SELECTOR: z.string().default("td:nth-child(2)"),
+  INVOICE_AMOUNT_SELECTOR: z.string().default("td:nth-child(4)"),
   INVOICE_DOWNLOAD_SELECTOR: z.string().default('td:last-child a[href], a[href*="invoice.stripe.com"]'),
   // Selectors for the actual PDF download controls, evaluated on the Stripe
   // Hosted Invoice Page (not on the billing table row). That page exposes

@@ -9,10 +9,18 @@ const STRIPE_INVOICE_LINK_SELECTOR = 'a[href*="invoice.stripe.com"], a[href*="in
 const INVOICE_DATA_WAIT_MS = 45_000;
 
 export interface InvoiceInfo {
-  /** Stable-ish identifier used for ledger dedupe (hash of the view URL, or date+index fallback). */
+  /** Ledger dedupe key — hash of {@link fingerprint}, not the Stripe view URL. */
   id: string;
+  /**
+   * Stable identity from the billing row (date + description + amount).
+   * Stripe hosted-invoice URLs rotate their signed token every load, so
+   * hashing the view URL made the same invoice look new every day.
+   */
+  fingerprint: string;
   /** Raw scraped date text, for logging/subject lines. */
   dateText: string;
+  descriptionText: string;
+  amountText: string;
   /**
    * Absolute URL to the invoice's "View" link. For Cursor (Stripe-billed)
    * this is a Stripe Hosted Invoice Page, NOT a direct PDF — the real PDF
@@ -220,9 +228,37 @@ export async function collectBillingDiagnostics(page: Page): Promise<BillingPage
   });
 }
 
-function invoiceIdFrom(viewUrl: string | null, dateText: string, index: number): string {
-  const idSource = viewUrl ?? `${dateText}-${index}`;
+function normalizeInvoicePart(value: string): string {
+  return value.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+/** Stable row identity. Never include the Stripe view URL — those tokens rotate. */
+export function invoiceFingerprint(dateText: string, descriptionText: string, amountText: string): string {
+  return [dateText, descriptionText, amountText].map(normalizeInvoicePart).filter(Boolean).join("|");
+}
+
+function invoiceIdFrom(fingerprint: string, dateText: string, index: number): string {
+  const idSource = fingerprint || `${dateText}-${index}`;
   return createHash("sha256").update(idSource).digest("hex").slice(0, 16);
+}
+
+function invoiceFromParts(
+  dateText: string,
+  descriptionText: string,
+  amountText: string,
+  viewUrl: string | null,
+  index: number,
+): InvoiceInfo {
+  const fingerprint = invoiceFingerprint(dateText, descriptionText, amountText);
+  return {
+    id: invoiceIdFrom(fingerprint, dateText, index),
+    fingerprint,
+    dateText: dateText || `row-${index}`,
+    descriptionText,
+    amountText,
+    viewUrl,
+    rowIndex: index,
+  };
 }
 
 async function scrapeConfiguredRows(page: Page, config: Config): Promise<InvoiceInfo[]> {
@@ -235,6 +271,10 @@ async function scrapeConfiguredRows(page: Page, config: Config): Promise<Invoice
     const row = rows.nth(i);
 
     const dateText = (await row.locator(config.INVOICE_DATE_SELECTOR).first().innerText().catch(() => "")).trim();
+    const descriptionText = (
+      await row.locator(config.INVOICE_DESCRIPTION_SELECTOR).first().innerText().catch(() => "")
+    ).trim();
+    const amountText = (await row.locator(config.INVOICE_AMOUNT_SELECTOR).first().innerText().catch(() => "")).trim();
 
     const viewLocator = row.locator(config.INVOICE_DOWNLOAD_SELECTOR).first();
     const hasViewLink = (await viewLocator.count()) > 0;
@@ -253,12 +293,7 @@ async function scrapeConfiguredRows(page: Page, config: Config): Promise<Invoice
       continue;
     }
 
-    invoices.push({
-      id: invoiceIdFrom(viewUrl, dateText, i),
-      dateText: dateText || `row-${i}`,
-      viewUrl,
-      rowIndex: i,
-    });
+    invoices.push(invoiceFromParts(dateText, descriptionText, amountText, viewUrl, i));
   }
 
   return invoices;
@@ -283,27 +318,28 @@ async function scrapeStripeInvoiceLinks(page: Page, config: Config): Promise<Inv
     if (seen.has(viewUrl)) continue;
     seen.add(viewUrl);
 
-    const dateText = (
-      await links
-        .nth(i)
-        .evaluate((el) => {
-          const node = el as {
-            closest?: (selector: string) => { querySelector?: (selector: string) => { textContent?: string } | null } | null;
-            textContent?: string;
-          };
-          const row = node.closest?.("tr, [role='row']");
-          const firstCell = row?.querySelector?.("td, [role='cell']");
-          return (firstCell?.textContent || node.textContent || "").trim();
-        })
-        .catch(() => "")
-    ).trim();
+    const cells = await links
+      .nth(i)
+      .evaluate((el) => {
+        const node = el as {
+          closest?: (selector: string) => { querySelectorAll?: (selector: string) => ArrayLike<{ textContent?: string }> } | null;
+          textContent?: string;
+        };
+        const row = node.closest?.("tr, [role='row']");
+        const texts = Array.from(row?.querySelectorAll?.("td, [role='cell']") ?? []).map((cell) =>
+          (cell.textContent ?? "").trim(),
+        );
+        return {
+          dateText: texts[0] ?? "",
+          descriptionText: texts[1] ?? "",
+          amountText: texts[3] ?? texts[2] ?? "",
+        };
+      })
+      .catch(() => ({ dateText: "", descriptionText: "", amountText: "" }));
 
-    invoices.push({
-      id: invoiceIdFrom(viewUrl, dateText, i),
-      dateText: dateText || `stripe-${i}`,
-      viewUrl,
-      rowIndex: i,
-    });
+    invoices.push(
+      invoiceFromParts(cells.dateText, cells.descriptionText, cells.amountText, viewUrl, i),
+    );
   }
 
   return invoices;
